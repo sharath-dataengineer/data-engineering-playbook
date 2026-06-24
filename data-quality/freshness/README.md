@@ -2,6 +2,19 @@
 
 > Chapter from the **Data Engineering Playbook** — data-quality.
 
+## About This Chapter
+
+**What this is.** Freshness is the lag between now and the moment a table last became true. This chapter covers measuring that lag honestly against the right clock, alerting before consumers notice, and not being fooled by backfills or dark slices.
+
+**Who it's for.** data engineers, analytics engineers, data/ML engineers, platform/architecture leads, and engineers preparing for senior/staff data-engineering interviews.
+
+**What you'll take away.** By the end you'll be able to:
+- Distinguish event, ingest, and commit time, and measure freshness as a lag on the read path using Iceberg/Delta metadata instead of full-table scans.
+- Catch partial ("dark slice") staleness with dimensioned freshness plus zero-row checks, and separate "data arriving late" from "old data being rewritten."
+- Set per-consumer-tier SLOs (soft percentile + hard ceiling) and run an independent freshness sentinel that survives a wedged producing DAG.
+
+---
+
 Freshness is the answer to one question a consumer actually asks: *"As of what wall-clock moment is this table true?"* Everything else in this chapter is about measuring that lag honestly, alerting on it before the consumer notices, and not lying to yourself about which clock you're measuring against.
 
 ## TL;DR

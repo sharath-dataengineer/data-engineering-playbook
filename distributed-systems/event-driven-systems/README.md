@@ -2,6 +2,19 @@
 
 > Chapter from the **Data Engineering Playbook** — distributed-systems.
 
+## About This Chapter
+
+**What this is.** Event-driven systems treat immutable facts on an append-only log (Kafka) as the integration backbone between services. This chapter covers the decoupling win and the hard problems it shifts onto you: ordering, duplicate processing, the dual-write trap, schema evolution, and consumer lag.
+
+**Who it's for.** Data engineers, data/ML engineers, platform/architecture leads, and engineers preparing for senior/staff data-engineering interviews.
+
+**What you'll take away.** By the end you'll be able to:
+- Choose a partition key as your ordering-and-concurrency contract, and reason about per-partition ordering vs. parallelism (including hot-partition avoidance).
+- Eliminate dual-write divergence with the transactional outbox + CDC, and build effectively-once processing from at-least-once delivery plus a consumer-side idempotency key.
+- Govern topics with Schema Registry compatibility, DLQs, tombstones, and lag-derivative alerting rather than CPU-based monitoring.
+
+---
+
 ## TL;DR
 
 - An event is an immutable fact ("OrderPlaced at 14:02:11Z, order_id=A91"), not a command or a request. Once you internalize that distinction, most design arguments resolve themselves.

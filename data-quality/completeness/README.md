@@ -2,6 +2,19 @@
 
 > Chapter from the **Data Engineering Playbook** — data-quality.
 
+## About This Chapter
+
+**What this is.** Completeness is proving that every row that should exist does, and that the columns you depend on are actually populated. This chapter covers row vs. attribute completeness, where the "expected" reference comes from, and how to enforce it as a promotion gate.
+
+**Who it's for.** data engineers, analytics engineers, platform/architecture leads, and engineers preparing for senior/staff data-engineering interviews.
+
+**What you'll take away.** By the end you'll be able to:
+- Separate row completeness from attribute completeness and source an independent reference cardinality (control file, source count, partition expectation, or forecast band).
+- Disambiguate structural NULLs from lost values, handle sentinels and conditional denominators, and check completeness per segment rather than table-wide.
+- Implement watermark-sealed two-tier verdicts for streaming and wire a failed completeness assertion as a blocking gate before `staging → gold`.
+
+---
+
 Completeness is the discipline of proving that *every row that should exist, does* — and that the columns you depend on are actually populated. It is the cheapest data-quality dimension to check and the most expensive to get wrong, because incompleteness is silent: a pipeline that drops 8% of orders still produces a green dashboard, valid schemas, and clean-looking sums. Nobody pages you. Finance just quietly under-reports revenue until someone reconciles against the source of truth three weeks later.
 
 ## TL;DR

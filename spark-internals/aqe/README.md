@@ -2,6 +2,19 @@
 
 > Chapter from the **Data Engineering Playbook** — spark-internals.
 
+## About This Chapter
+
+**What this is.** Adaptive Query Execution (AQE) is Spark 3.x's mechanism for re-optimizing a physical plan mid-flight using real shuffle statistics. This chapter explains how it works, the three runtime transforms it performs, and how to tune and verify it in production.
+
+**Who it's for.** Data engineers, data/ML engineers, platform/architecture leads, and engineers preparing for senior/staff data-engineering interviews.
+
+**What you'll take away.** By the end you'll be able to:
+- Explain how AQE coalesces shuffle partitions, switches sort-merge joins to broadcast, and splits skewed join partitions at stage boundaries.
+- Tune the knobs that actually move p95 (`advisoryPartitionSizeInBytes`, the skew factor/threshold pair, `parallelismFirst`, broadcast threshold) instead of just flipping `enabled`.
+- Recognize AQE's limits — aggregation skew, map-only stages, streaming, driver-OOM on the broadcast switch — and verify what it actually did from the executed plan.
+
+---
+
 Spark's cost-based optimizer plans a query *once*, before a single byte moves, using table statistics that are usually stale, missing, or lying. AQE is the mechanism that lets Spark tear up that plan mid-flight and re-optimize using the actual shuffle sizes it just measured. It is the single highest-leverage tuning lever in Spark 3.x for skewed, fan-out, and statistics-poor workloads — and the one most teams misconfigure.
 
 ## TL;DR

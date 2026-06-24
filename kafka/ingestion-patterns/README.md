@@ -2,6 +2,17 @@
 
 > Chapter from the Data Engineering Playbook — kafka.
 
+## About This Chapter
+
+**What this is.** A survey of the patterns for moving data out of Kafka — batch, micro-batch, near-real-time, and real-time — plus Lambda, Kappa, CDC, windowed aggregation, and fan-out. This chapter maps latency requirements to the right tool and operational trade-offs.
+
+**Who it's for.** data engineers, analytics engineers, data/ML engineers, and platform/architecture leads.
+
+**What you'll take away.** By the end you'll be able to:
+- Match a downstream SLA to the right latency tier and tech (Kafka Connect, Spark Structured Streaming, Flink, Kafka Streams, ksqlDB) without over-engineering.
+- Implement micro-batch and streaming ingestion with bounded triggers, checkpoints, and small-file compaction on Delta/Iceberg.
+- Apply CDC (Debezium) change streams and windowed aggregations, and choose between Lambda and Kappa for reprocessing.
+
 ---
 
 ## TL;DR

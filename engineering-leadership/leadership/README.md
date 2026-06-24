@@ -2,6 +2,19 @@
 
 > Chapter from the **Data Engineering Playbook** — engineering-leadership.
 
+## About This Chapter
+
+**What this is.** Technical leadership for a principal engineer with no direct reports: changing what fifty engineers build by changing the defaults, gates, and stories rather than the code. This chapter treats leadership as a systems-design problem where the system is the org plus its pipelines.
+
+**Who it's for.** Platform/architecture leads, engineering managers/tech leads, and engineers preparing for senior/staff data-engineering interviews.
+
+**What you'll take away.** By the end you'll be able to:
+- Apply leverage through golden paths, scaffolds, CI gates, and ADRs instead of one-off mandates, and pick the right altitude (global vs domain vs local) for each decision.
+- Earn and spend technical authority — carrying the pager, shipping load-bearing code, and practicing "disagree and commit" with falsifiable predictions wired into ADR tripwires.
+- Set a quality bar via automated gates and a short "consult a principal" trigger list without becoming the single-approver bottleneck.
+
+---
+
 Most leadership writing aimed at engineers is about people skills. This chapter is not. It is about the technical leverage a principal engineer applies to a data platform with no direct reports: how you change what fifty engineers build by changing the defaults, the review gates, the failure budgets, and the stories the org tells about incidents. Leadership at this level is a systems-design problem where the system is the organization plus its pipelines.
 
 ## TL;DR

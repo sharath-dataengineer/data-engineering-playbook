@@ -2,6 +2,19 @@
 
 > Chapter from the **Data Engineering Playbook** — spark-internals.
 
+## About This Chapter
+
+**What this is.** Data skew is when one straggler task runs for far longer than its siblings because a hot key concentrates rows into a single partition. This chapter covers how to recognize skew, fix the distribution rather than the cluster, and layer the remedies.
+
+**Who it's for.** Data engineers, data/ML engineers, platform/architecture leads, and engineers preparing for senior/staff data-engineering interviews.
+
+**What you'll take away.** By the end you'll be able to:
+- Diagnose skew from the Spark UI using the max/median ratio of task duration and shuffle-read bytes, and name the offending key (including null/sentinel keys).
+- Know when AQE skew join helps and when it silently no-ops (aggregations, windows, streaming side, broadcast joins).
+- Apply two-phase salting with the right salt cardinality, the isolate-and-union pattern, and the broadcast → AQE → salt → redesign escalation order.
+
+---
+
 A single straggler task that runs for 47 minutes while 1,999 of its 2,000 siblings finished in 30 seconds is not a tuning problem — it is a data-distribution problem wearing a performance costume. This chapter is about recognizing that, and fixing the distribution rather than throwing executors at it.
 
 ## TL;DR

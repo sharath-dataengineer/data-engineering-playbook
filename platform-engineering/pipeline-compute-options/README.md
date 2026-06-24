@@ -2,6 +2,17 @@
 
 > Chapter from the Data Engineering Playbook — platform-engineering.
 
+## About This Chapter
+
+**What this is.** A comparison of the engines that run data pipelines — EMR Serverless, EMR on EC2/EKS, Glue, Lambda, Databricks, Dataproc/Synapse, Spark on K8s, dbt, Flink, and Trino — and a framework for matching each to a workload by data size, latency, and complexity.
+
+**Who it's for.** Data engineers, platform/architecture leads, engineering managers/tech leads, and engineers preparing for senior/staff data-engineering interviews.
+
+**What you'll take away.** By the end you'll be able to:
+- Place a workload on the serverless-vs-persistent and managed-vs-self-managed axes and pick a default (EMR Serverless on AWS) with clear migration signals off it.
+- Decide when to use Spark and — just as important — when to avoid it for dbt, Lambda, Trino/Athena, or Flink, using the volume/complexity crossover.
+- Compare options on cost and capability (including the Glue and Databricks premiums) and recognize the common over-engineering anti-patterns.
+
 ---
 
 ## TL;DR

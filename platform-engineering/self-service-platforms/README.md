@@ -2,6 +2,19 @@
 
 > Chapter from the **Data Engineering Playbook** — platform-engineering.
 
+## About This Chapter
+
+**What this is.** How to build a self-service data platform — the contract that lets a domain team ship a production data product without filing a ticket. The platform owns the primitives (compute, storage, catalog, CI, observability); domains own the data and SLAs. The hard part is drawing and encoding the line between paved and open.
+
+**Who it's for.** Platform/architecture leads, engineering managers/tech leads, data engineers, and engineers preparing for senior/staff data-engineering interviews.
+
+**What you'll take away.** By the end you'll be able to:
+- Treat self-service as a declarative API surface (a git-tracked `product.yaml` plus a CI policy gate), and locate an org on the L0–L4 maturity gradient.
+- Enforce structural, policy, and schema-compatibility rules at admission time with OPA/Conftest, and provision tables, lineage, and cost tags from one file.
+- Design multi-tenant isolation (compute/storage/cost) with soft quotas, a hard ceiling, and preemptible burst, plus a named escape hatch and an API-style versioning and deprecation policy.
+
+---
+
 A self-service platform is the contract that lets a domain team ship a production data product — table, stream, pipeline, dashboard — without filing a ticket against the platform team. The platform owns the primitives (compute, storage, catalog, CI, observability); domains own the data and the SLAs. The hard part is not the primitives. It's drawing the line between what is paved and what is open, and encoding that line in code instead of a wiki.
 
 ## TL;DR

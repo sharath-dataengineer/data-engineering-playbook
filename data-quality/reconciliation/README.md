@@ -2,6 +2,19 @@
 
 > Chapter from the **Data Engineering Playbook** — data-quality.
 
+## About This Chapter
+
+**What this is.** Reconciliation is proving that two representations of the same facts agree within a defined tolerance, and producing an auditable breakdown of exactly which rows and amounts disagree when they don't. This chapter covers the three-altitude comparison and the as-of semantics that make it reliable.
+
+**Who it's for.** data engineers, analytics engineers, platform/architecture leads, engineering managers/tech leads, and engineers preparing for senior/staff data-engineering interviews.
+
+**What you'll take away.** By the end you'll be able to:
+- Reconcile at three altitudes (row count, control totals, key-level full-outer diff) and descend to the expensive level only when needed.
+- Define typed, per-measure tolerance, pin both sides to a fixed cutoff/snapshot, and project to a common grain to eliminate false breaks.
+- Guard against the no-op pass with coverage assertions, and quarantine/attribute/age breaks as a first-class, queryable dataset.
+
+---
+
 Reconciliation is the discipline of proving that two representations of the same facts agree within a defined tolerance — and producing an auditable breakdown of exactly which rows, keys, and amounts disagree when they don't. It is the difference between "the pipeline ran green" and "the ledger ties out."
 
 ## TL;DR

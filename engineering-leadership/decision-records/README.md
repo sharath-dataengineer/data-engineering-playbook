@@ -2,6 +2,19 @@
 
 > Chapter from the **Data Engineering Playbook** — engineering-leadership.
 
+## About This Chapter
+
+**What this is.** An Architecture Decision Record (ADR) is a short, immutable document that captures one significant decision and the context future engineers can no longer reconstruct. This chapter covers how to write, store, and enforce them on a data platform.
+
+**Who it's for.** Data engineers, platform/architecture leads, engineering managers/tech leads, and engineers preparing for senior/staff data-engineering interviews.
+
+**What you'll take away.** By the end you'll be able to:
+- Write atomic, append-only ADRs whose value is the negative space — the rejected alternatives and the consequences — with measurable revisit triggers.
+- Apply the "cost of reversal" filter to decide what warrants an ADR, and supersede cleanly with bidirectional links instead of editing accepted records.
+- Keep ADRs alive in the repo with a CI linter, an auto-generated index, and a significant-path gate that blocks expensive changes from merging silently.
+
+---
+
 An Architecture Decision Record (ADR) is a short, immutable document that captures one architecturally significant decision, the forces that shaped it, and the consequences we accepted. The value is not the decision — it's the *context* that future engineers can no longer reconstruct.
 
 ## TL;DR

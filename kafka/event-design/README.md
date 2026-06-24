@@ -2,6 +2,19 @@
 
 > Chapter from the **Data Engineering Playbook** — Kafka.
 
+## About This Chapter
+
+**What this is.** The shape of an event — its schema, key, partitioning, retention, and envelope — is a long-lived API contract. This chapter covers how to design events that survive years of producers and consumers evolving independently without coordinated deploys.
+
+**Who it's for.** data engineers, analytics engineers, data/ML engineers, platform/architecture leads, and engineers preparing for senior/staff data-engineering interviews.
+
+**What you'll take away.** By the end you'll be able to:
+- Choose deliberately between fact, delta, and state events and understand the replay, idempotency, and compaction properties of each.
+- Pick a partition key that gives you the ordering you need while managing hot-spot and parallelism trade-offs, and configure `FULL_TRANSITIVE` schema evolution.
+- Design a stable event envelope for routing, dedup, and lineage, and run dual-write migrations for semantically breaking changes.
+
+---
+
 The shape of an event is the most expensive decision you make on a streaming platform, because once a topic has 40 downstream consumers you no longer own the schema — they do. This chapter is about designing events that can survive five years of producers and consumers evolving independently without a coordinated deploy.
 
 ## TL;DR

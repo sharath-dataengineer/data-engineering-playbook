@@ -2,6 +2,19 @@
 
 > Chapter from the **Data Engineering Playbook** — lakehouse.
 
+## About This Chapter
+
+**What this is.** Apache Iceberg is a table format: a metadata tree over immutable data files plus a catalog holding one atomic pointer. This chapter explains how that copy-on-write pointer swap gives you snapshots, hidden partitioning, schema/partition evolution, and time travel — and where it breaks at scale.
+
+**Who it's for.** Data engineers, data/ML engineers, platform/architecture leads, and engineers preparing for senior/staff data-engineering interviews.
+
+**What you'll take away.** By the end you'll be able to:
+- Trace a commit through the metadata tree and the catalog compare-and-swap, and reason about snapshot vs serializable isolation.
+- Pick copy-on-write vs merge-on-read per table and manage delete files, sort orders, and stats so pruning actually works.
+- Keep planning fast by scheduling `rewrite_data_files`, `rewrite_manifests`, and `expire_snapshots`, and choose a catalog (REST/Glue/Nessie) that fits the write concurrency.
+
+---
+
 Iceberg is a table format, not a storage engine and not a query engine. It is a specification for a tree of metadata files sitting on top of immutable Parquet/ORC/Avro data files in object storage, plus a contract with a catalog that holds one atomic pointer: the current metadata location. Everything Iceberg gives you — serializable snapshots, schema and partition evolution without rewrites, time travel, engine portability — falls out of that one design decision. Once you internalize that the whole format is a copy-on-write pointer swap over an immutable file tree, the operational behavior stops being surprising.
 
 ## TL;DR

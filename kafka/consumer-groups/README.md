@@ -2,6 +2,19 @@
 
 > Chapter from the **Data Engineering Playbook** — kafka.
 
+## About This Chapter
+
+**What this is.** A consumer group is how Kafka spreads a topic's partitions across multiple consumers for parallelism and failover. This chapter covers the membership protocol, rebalancing, the timers that govern liveness, and the offset/coordination machinery behind it.
+
+**Who it's for.** data engineers, data/ML engineers, platform/architecture leads, and engineers preparing for senior/staff data-engineering interviews.
+
+**What you'll take away.** By the end you'll be able to:
+- Size consumers against the partition ceiling and use cooperative-sticky assignment plus static membership to make rolling deploys rebalance-free.
+- Reason about `session.timeout.ms`, `heartbeat.interval.ms`, and `max.poll.interval.ms`, and diagnose which one is evicting a healthy consumer.
+- Write a correct manual-commit consumer with a revoke handler that commits last-processed + 1, and treat `__consumer_offsets` as infrastructure you own.
+
+---
+
 A consumer group is Kafka's unit of horizontal scale, fault tolerance, and ordering guarantee all at once. Get the membership protocol wrong and you don't get a slow consumer — you get a group that spends more time rebalancing than processing, lag that climbs while CPU sits idle, and duplicate writes that corrupt downstream tables.
 
 ## TL;DR

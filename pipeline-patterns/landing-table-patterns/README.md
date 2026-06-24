@@ -2,6 +2,17 @@
 
 > Chapter from the Data Engineering Playbook — pipeline-patterns.
 
+## About This Chapter
+
+**What this is.** Landing tables are the shapes raw and modeled data takes once it lands in the warehouse. This chapter walks through eight patterns — event log, periodic snapshot, SCD1, SCD2, raw landing, CDC changelog, accumulating snapshot, and factless fact — using one e-commerce domain so the tradeoffs are directly comparable.
+
+**Who it's for.** data engineers, analytics engineers, platform/architecture leads, and engineers preparing for senior/staff data-engineering interviews.
+
+**What you'll take away.** By the end you'll be able to:
+- Pick the right table pattern for a given question (state-at-a-point vs. what-happened vs. point-in-time history vs. process-duration analytics).
+- Recognize the mutability, history, partitioning, and uniqueness profile of each pattern, and how they layer together off a single CDC source.
+- Avoid the silent-corruption anti-patterns, such as append-only on an entity table or an accumulating snapshot written append-only instead of by MERGE.
+
 ---
 
 ## TL;DR

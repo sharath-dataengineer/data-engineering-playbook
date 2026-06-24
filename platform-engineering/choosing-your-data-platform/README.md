@@ -2,6 +2,17 @@
 
 > Chapter from the Data Engineering Playbook — platform-engineering.
 
+## About This Chapter
+
+**What this is.** A decision guide for picking the storage and compute foundation of a data platform — warehouse vs. lake, and which table format (Hive, Delta, Iceberg, Hudi) to build on. It walks the choices stage by stage as a company grows from gigabytes to petabytes.
+
+**Who it's for.** Data engineers, platform/architecture leads, engineering managers/tech leads, and engineers preparing for senior/staff data-engineering interviews.
+
+**What you'll take away.** By the end you'll be able to:
+- Use five upfront questions to decide between a managed warehouse and a data lake, and know when dbt fits (transformation only, never the platform itself).
+- Pick a table format deliberately — Hive for append-only, Delta for Databricks CDC, Iceberg for multi-engine, Hudi for streaming upserts — and justify it in a head-to-head comparison.
+- Map a progressive architecture to data volume and avoid the classic over- and under-engineering traps and high-cost-to-reverse format mistakes.
+
 ---
 
 ## TL;DR

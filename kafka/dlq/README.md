@@ -2,6 +2,19 @@
 
 > Chapter from the **Data Engineering Playbook** — kafka.
 
+## About This Chapter
+
+**What this is.** A dead letter queue (DLQ) is where a consumer routes messages it cannot process. This chapter treats the DLQ as a contract — classifying transient vs. terminal failures, tiered non-blocking retries, what to capture for replay, and the ordering/exactly-once trade-offs of rerouting.
+
+**Who it's for.** data engineers, data/ML engineers, platform/architecture leads, and engineers preparing for senior/staff data-engineering interviews.
+
+**What you'll take away.** By the end you'll be able to:
+- Separate transient from terminal failures and build tiered retry topics so a poison message never wedges a partition.
+- Preserve the original payload byte-for-byte with rich failure-metadata headers, and run guarded, filtered, manual replay.
+- Alert on DLQ ingress rate and distinct exception fingerprints instead of depth, and keep DLQ produces inside the EOS transaction.
+
+---
+
 A dead letter queue (DLQ) is not a feature you turn on. It is a contract you design: which failures are recoverable, which are terminal, who owns the recovery, and how a message gets back into the main flow without breaking ordering or idempotency. Get the contract wrong and the DLQ becomes a write-only swamp that quietly drops revenue events.
 
 ## TL;DR

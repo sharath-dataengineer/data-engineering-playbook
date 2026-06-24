@@ -2,6 +2,19 @@
 
 > Chapter from the **Data Engineering Playbook** — kafka.
 
+## About This Chapter
+
+**What this is.** An offset is a per-partition position that defines where a consumer resumes after a crash. This chapter is about when and where you move the committed offset relative to your side effects — the ordering that decides duplicates, data loss, and replay.
+
+**Who it's for.** data engineers, data/ML engineers, platform/architecture leads, and engineers preparing for senior/staff data-engineering interviews.
+
+**What you'll take away.** By the end you'll be able to:
+- Reason about the broker watermarks and lag, and commit last-processed + 1 after the side effect to get correct at-least-once behavior.
+- Choose `auto.offset.reset` deliberately and avoid the auto-commit and `offsets.retention.minutes` traps that cause silent skips or replays.
+- Achieve exactly-once by deriving the offset from sink state or Kafka transactions, and read accurate lag for Spark/Flink jobs that checkpoint offsets themselves.
+
+---
+
 An offset is a 64-bit integer that names a position in a partition's log. Everything about consumer correctness — duplicates, data loss, replay, lag, rebalance pain — reduces to one question: *when, and to where, do you move the committed offset relative to when you do the side effect?* Get the ordering wrong and you ship double-charged invoices or silently drop events. This chapter is about that ordering.
 
 ## TL;DR

@@ -2,6 +2,19 @@
 
 > Chapter from the **Data Engineering Playbook** — finops.
 
+## About This Chapter
+
+**What this is.** Cost optimization treated as an engineering discipline — instrument, attribute, find the dominant cost term, fix it, and add a guardrail so it can't regress. This chapter ranks the levers for Spark/lakehouse spend and shows why the dominant term keeps moving.
+
+**Who it's for.** Data engineers, platform/architecture leads, and engineering managers/tech leads.
+
+**What you'll take away.** By the end you'll be able to:
+- Optimize unit cost (`$/TB scanned`, `$/million events`) rather than the lagging aggregate bill.
+- Apply the three levers in the right order — bytes scanned (pruning, compaction, projection), then compute price (Spot, Graviton, Savings Plans), then idle/over-provisioned capacity — and know why bytes-scanned wins compound.
+- Make Spot a per-stage decision, treat compaction/snapshot-expiry as monitored pipelines, and enforce a `bytes_scanned` budget at submit time instead of in a wiki.
+
+---
+
 Cost optimization in a data platform is not a quarterly spreadsheet exercise. It is an engineering discipline with the same feedback loops as latency or correctness: instrument, attribute, find the dominant term, fix it, and put a guardrail in place so it does not regress. The hard part is that the dominant cost term moves. This quarter it is a single broadcast-gone-wrong job scanning 40 TB; next quarter it is 3,000 tiny-file Iceberg tables paying S3 PUT and metadata-listing taxes. This chapter is about how a principal engineer keeps finding and killing the dominant term without trading away reliability.
 
 ## TL;DR

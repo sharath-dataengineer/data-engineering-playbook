@@ -2,6 +2,19 @@
 
 > Chapter from the **Data Engineering Playbook** — engineering-leadership.
 
+## About This Chapter
+
+**What this is.** A data-platform roadmap as a risk-and-capacity allocation document: sequencing work against shared, hard-to-fork infrastructure (one metastore, one Spark line, one Kafka cluster) where the wrong order causes two migrations instead of one.
+
+**Who it's for.** Platform/architecture leads, engineering managers/tech leads, data engineers, and engineers preparing for senior/staff data-engineering interviews.
+
+**What you'll take away.** By the end you'll be able to:
+- Sequence initiatives off a dependency DAG of platform primitives and score them on leverage vs blast radius, front-loading quick wins to earn the slack for big bets.
+- Commit to capacity-bounded Now/Next/Later bands with testable exit criteria and written kill conditions instead of calendar dates.
+- Budget the migration long-tail as a power law, reserve 20–30% for keep-the-lights-on, and treat the slowest consumer cutover as the real critical path.
+
+---
+
 A roadmap is not a list of features with quarters next to them. For a data platform it is a **risk-and-capacity allocation document** that answers one question for an executive who can't read a query plan: *given finite engineers and a finite blast radius, what do we change, in what order, so the platform stops bleeding and starts compounding?* The hard part isn't picking good projects — it's sequencing them against shared infrastructure (one metastore, one Spark version, one Kafka cluster) where the wrong order causes two migrations instead of one.
 
 ## TL;DR

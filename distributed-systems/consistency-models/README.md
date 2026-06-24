@@ -2,6 +2,19 @@
 
 > Chapter from the **Data Engineering Playbook** — distributed-systems.
 
+## About This Chapter
+
+**What this is.** A consistency model is the precise contract about which values a read may return given the writes that have happened. This chapter walks the lattice from linearizable down to eventual, the quorum math behind read freshness, and the seams where strong and weak guarantees meet and cause real incidents.
+
+**Who it's for.** Data engineers, analytics engineers, platform/architecture leads, and engineers preparing for senior/staff data-engineering interviews.
+
+**What you'll take away.** By the end you'll be able to:
+- Place linearizable, sequential, causal, session (read-your-writes/monotonic), and eventual consistency on a lattice and pick the weakest model that keeps a feature correct.
+- Fix the common "my write disappeared" bug with read-your-writes via writer-pinning or an LSN/version token.
+- Explain why the lakehouse runs on snapshot isolation (not serializability), and why a MERGE needs the dedup key in its `ON` clause to avoid write skew.
+
+---
+
 A "consistency model" is the contract between a storage system and its clients about *what values a read is allowed to return given the writes that have happened*. It is not a quality knob you tune higher for "more correct." It is a precise specification, and almost every data incident I have debugged in 11 years — duplicated invoices, a dashboard that disagrees with the source-of-truth ledger, a Spark job that read a half-committed Iceberg snapshot — traces back to someone assuming a stronger model than the system actually provides.
 
 ## TL;DR

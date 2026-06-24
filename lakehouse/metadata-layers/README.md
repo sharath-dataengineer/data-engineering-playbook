@@ -2,6 +2,19 @@
 
 > Chapter from the **Data Engineering Playbook** — lakehouse.
 
+## About This Chapter
+
+**What this is.** The metadata layer is the thin tier of state — table metadata plus the catalog pointer — that turns Parquet files into a consistent table across many engines. This chapter covers the three stacked layers, why the atomic compare-and-swap of the current-metadata pointer is the whole correctness story, and how different catalogs implement it.
+
+**Who it's for.** Data engineers, platform/architecture leads, engineering managers/tech leads, and engineers preparing for senior/staff data-engineering interviews.
+
+**What you'll take away.** By the end you'll be able to:
+- Distinguish the pointer registry, the table-metadata tree, and the governance surface, and reason about the optimistic-concurrency commit invariant.
+- Explain why Glue/HMS need lock workarounds and why the REST catalog (with credential vending and branch refs) became the convergence point.
+- Migrate catalogs via `register_table` without copying or corrupting data, and treat the catalog as a tier-0, HA dependency with commit-latency SLIs.
+
+---
+
 The metadata layer is the part of a lakehouse nobody draws on the architecture slide and everybody pages someone about at 2am. It is the thin layer of state that turns a pile of Parquet in S3 into a *table* with a name, a schema, a current version, and an answer to the question "what files do I read right now?" Get it right and a hundred engines see one consistent table. Get it wrong and you get silent data loss, phantom duplicates, and `CommitFailedException` storms that no amount of compute will fix.
 
 ## TL;DR

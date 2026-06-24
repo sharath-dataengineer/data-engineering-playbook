@@ -2,6 +2,20 @@
 
 > Chapter from the **Data Engineering Playbook** — data-modeling.
 
+## About This Chapter
+
+**What this is.** Data Vault 2.0 decomposes the warehouse integration layer into insert-only Hubs (business keys), Links (relationships), and Satellites (time-variant context). This chapter covers the hash-key and hashdiff mechanics that let every source load in parallel, the modeling discipline that makes a vault work, and the lakehouse tax you pay for it.
+
+**Who it's for.** Data engineers, data/ML engineers, platform/architecture leads, and engineers preparing for senior/staff data-engineering interviews.
+
+**What you'll take away.** By the end you'll be able to:
+- Model Hubs, Links, and Satellites and use deterministic hash keys to remove load-time inter-table dependencies.
+- Split satellites by rate of change, source, and classification, and handle effectivity satellites, driving keys, ghost records, and bi-temporal load-vs-applied time.
+- Implement append + MERGE-on-hashdiff loaders on Iceberg and build PIT tables that turn as-of subqueries into cheap equi-joins.
+- Judge when a vault earns its 3-5x table fan-out versus when a star schema or one-big-table is the right call.
+
+---
+
 ## TL;DR
 
 - Data Vault decomposes the warehouse into three immutable, insert-only structures: **Hubs** (business keys), **Links** (relationships between keys), and **Satellites** (time-variant descriptive context). The split is what lets you load every source in parallel without coordination and without ever rewriting history.

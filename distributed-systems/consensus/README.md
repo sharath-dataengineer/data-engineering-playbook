@@ -2,6 +2,19 @@
 
 > Chapter from the **Data Engineering Playbook** — distributed-systems.
 
+## About This Chapter
+
+**What this is.** Consensus is how a set of crash-prone machines agree on a single, totally-ordered, durable log of decisions. This chapter explains Raft/Multi-Paxos, the quorum math behind them, and — more importantly — the operational realities (fsync, leases, membership changes) that actually page you.
+
+**Who it's for.** Data engineers, platform/architecture leads, and engineers preparing for senior/staff data-engineering interviews.
+
+**What you'll take away.** By the end you'll be able to:
+- Reason about cluster sizing with `N=2f+1` and explain why even-numbered clusters are strictly dominated.
+- Diagnose the real-world failure modes — WAL fsync latency causing election storms, stale-leader reads, split-brain from bulk membership changes, and stuck-quorum recovery.
+- Locate where consensus lives in a Spark→Iceberg→Kafka pipeline and keep it on metadata (commits, leadership) rather than the per-row hot path.
+
+---
+
 Consensus is the problem of getting a set of machines that can crash, pause, and disagree to agree on a single sequence of decisions — and to keep agreeing even when some of them die. As a data engineer you rarely implement Raft or Paxos yourself, but you depend on a consensus engine every single time you commit an Iceberg snapshot, elect a Kafka controller, lease a partition, or take a Postgres lock. When that engine misbehaves — a stuck leader, a split brain, a quorum you can't reach — your "stateless" data pipeline grinds to a halt and the postmortem lands on your desk. This chapter is about understanding the machine underneath the abstraction well enough to operate it.
 
 ## TL;DR

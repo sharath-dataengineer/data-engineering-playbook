@@ -2,6 +2,20 @@
 
 > Chapter from the **Data Engineering Playbook** — data-modeling.
 
+## About This Chapter
+
+**What this is.** Customer 360 is the problem of resolving one trustworthy customer view out of N systems that each think they're the system of record. This chapter treats it as three layers — identity graph, golden record, and profile marts — and focuses on the identity resolution, survivorship, and consent work that is most of the job.
+
+**Who it's for.** Data engineers, data/ML engineers, platform/architecture leads, and engineers preparing for senior/staff data-engineering interviews.
+
+**What you'll take away.** By the end you'll be able to:
+- Separate the identity graph, golden record, and consumer marts, and resolve identity as connected components over deterministic and probabilistic edges.
+- Keep probabilistic merges reversible, cap runaway components, and hold `party_id` stable across re-resolution through the stable/grow/split/merge cases.
+- Encode per-attribute survivorship — including consent by most-restrictive — and model consent and GDPR/CCPA erasure as deterministic operations in the schema.
+- Apply bitemporal modeling, blocking before matching, lineage to source rows, and reconciliation back to source totals.
+
+---
+
 Customer 360 is the problem of producing one trustworthy view of a customer out of N systems that each believe they are the system of record. It is 20% modeling and 80% identity resolution, consent enforcement, and reconciliation. The schema is the easy part.
 
 ## TL;DR

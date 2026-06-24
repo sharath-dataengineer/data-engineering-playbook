@@ -2,6 +2,19 @@
 
 > Chapter from the **Data Engineering Playbook** — spark-internals.
 
+## About This Chapter
+
+**What this is.** "Partitioning" in Spark means three different things — runtime task partitions, shuffle partitions, and on-disk storage layout. This chapter separates them and shows how each affects performance, file sizing, and pruning.
+
+**Who it's for.** Data engineers, analytics engineers, data/ML engineers, and platform/architecture leads.
+
+**What you'll take away.** By the end you'll be able to:
+- Distinguish runtime, shuffle, and storage partitioning, and pick the right lever for a balance vs. read-optimization problem.
+- Prevent the small-files problem with a deliberate write-path `repartition` and async compaction, and choose `repartition` vs `coalesce` correctly.
+- Design pruning-friendly layouts (partition columns, DPP, Iceberg/Delta transforms and partition evolution) and verify pruning with `explain("formatted")`.
+
+---
+
 Partitioning is the one Spark concept that lives in three different worlds at once, and engineers conflate them constantly. There is **RDD/DataFrame partitioning** (how the data is split across tasks in memory at runtime), **shuffle partitioning** (how exchange operators redistribute rows by key), and **storage/Hive partitioning** (the physical directory layout on disk, e.g. `dt=2026-06-18/`). They interact, but they are not the same lever, and pulling the wrong one is the difference between a 4-minute job and a 40-minute one.
 
 ## TL;DR

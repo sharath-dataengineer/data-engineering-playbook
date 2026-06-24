@@ -2,6 +2,19 @@
 
 > Chapter from the **Data Engineering Playbook** — spark-internals.
 
+## About This Chapter
+
+**What this is.** Catalyst is Spark's query compiler — the tree-transformation framework that turns your DataFrame/SQL into a physical plan. This chapter walks its four stages and shows how the optimizer rules that decide your performance actually fire (or get blocked).
+
+**Who it's for.** Data engineers, analytics engineers, data/ML engineers, platform/architecture leads, and engineers preparing for senior/staff data-engineering interviews.
+
+**What you'll take away.** By the end you'll be able to:
+- Read `explain(mode="formatted")` and confirm predicate pushdown, column pruning, and partition pruning from `PushedFilters`, `ReadSchema`, and `PartitionFilters`.
+- Identify optimization barriers — Python UDFs, non-deterministic functions, `cache()` pinning a wide schema — that silently turn a 70 GB scan into a 4 TB one.
+- Use CBO and `ANALYZE TABLE ... COMPUTE STATISTICS FOR COLUMNS` correctly, and know where Catalyst's static planning ends and AQE's runtime re-optimization begins.
+
+---
+
 Catalyst is the query compiler that sits between the DataFrame/SQL you write and the RDD DAG that actually runs. Every `df.filter(...)`, every `spark.sql(...)`, every Iceberg or Delta read goes through it. If you do not understand Catalyst, you are tuning Spark by superstition.
 
 ## TL;DR

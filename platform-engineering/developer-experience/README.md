@@ -2,6 +2,19 @@
 
 > Chapter from the **Data Engineering Playbook** — platform-engineering.
 
+## About This Chapter
+
+**What this is.** A treatment of developer experience (DevEx) for data platforms as a measurable, SLO-bearing product — the friction between a data engineer's intent and a correct, observable pipeline in production, and how to collapse the feedback loops that create it.
+
+**Who it's for.** Data engineers, platform/architecture leads, engineering managers/tech leads, and engineers preparing for senior/staff data-engineering interviews.
+
+**What you'll take away.** By the end you'll be able to:
+- Drive the inner loop under ~90 seconds with local-mode Spark on sampled, shape-preserving fixtures, and reason about loop value as `N × ΔL`.
+- Enforce local/CI/prod parity by digest-pinned image and locked deps, and rewrite raw engine errors into actionable one-liners.
+- Instrument the metrics that matter — inner-loop p50/p90, CI false-failure rate, time-to-first-pipeline — and scale DevEx investment to team size and churn.
+
+---
+
 Developer experience (DevEx) for a data platform is the measured friction between a data engineer's intent and a correct, observable pipeline running in production. On data platforms it is harder than on application platforms, because the inner loop is slow (a Spark job takes minutes to fail), the failure surface is wide (schema, skew, late data, IAM, quota), and the feedback is often a stack trace from a JVM you didn't write. This chapter is about collapsing that loop.
 
 ## TL;DR

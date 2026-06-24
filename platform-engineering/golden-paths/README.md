@@ -2,6 +2,19 @@
 
 > Chapter from the Data Engineering Playbook — platform-engineering.
 
+## About This Chapter
+
+**What this is.** How to build a golden path for data pipelines — executable scaffolding plus enforced guardrails plus an operational posture, delivered as one artifact so a domain team gets a running, monitored pipeline in minutes instead of assembling the pieces by hand.
+
+**Who it's for.** Platform/architecture leads, engineering managers/tech leads, data engineers, and engineers preparing for senior/staff data-engineering interviews.
+
+**What you'll take away.** By the end you'll be able to:
+- Compose the three layers — scaffolding, machine-checked guardrails, and operational defaults — and reason about when a path pays off via the `N > c_path/(c − c_use)` crossover.
+- Encode correct-by-construction defaults (partition spec + maintenance jobs, scoped IAM via OPA/Conftest, cost tags, DLQ, SLOs) and a worked `copier` template.
+- Design a graduated escape hatch and version/stamp the path like a public API so fleet-wide patching and drift tracking stay tractable.
+
+---
+
 A golden path is the opinionated, supported route from "I have an idea for a pipeline" to "it is running in production with SLOs, lineage, alerts, and cost tags" — without the engineer having to assemble those pieces by hand. It is not a tutorial and it is not a wiki page. It is executable scaffolding plus enforced guardrails plus a default operational posture, delivered as one artifact.
 
 ## TL;DR

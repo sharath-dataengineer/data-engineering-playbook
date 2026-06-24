@@ -2,6 +2,17 @@
 
 > Chapter from the Data Engineering Playbook — distributed-systems.
 
+## About This Chapter
+
+**What this is.** A tour of the 11 database families a data engineer encounters — relational, columnar warehouse, document, key-value, wide-column, graph, time-series, search, NewSQL, vector, and data lake. For each, it covers what it is, why it exists, how it works, and where it fits in a pipeline as a source or target.
+
+**Who it's for.** Data engineers, analytics engineers, data/ML engineers, and engineers preparing for senior/staff data-engineering interviews.
+
+**What you'll take away.** By the end you'll be able to:
+- Match a workload's access pattern (point lookup, aggregation, traversal, full-text, similarity, time-range) to the right database type instead of forcing one engine everywhere.
+- Explain each store's storage and query model — row vs column vs LSM vs inverted index vs HNSW — and its consistency and scaling characteristics.
+- Reason about each type's CAP position and its DE role (source vs target), and avoid the classic anti-patterns like analytics on the OLTP primary or Elasticsearch as a warehouse.
+
 ---
 
 ## TL;DR

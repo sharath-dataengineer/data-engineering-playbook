@@ -2,6 +2,19 @@
 
 > Chapter from the **Data Engineering Playbook** — observability.
 
+## About This Chapter
+
+**What this is.** Logging for data pipelines, where the signal lives on ephemeral executors and failures are often silent quality regressions rather than thrown exceptions. This chapter covers structured logging, correlation IDs, executor-log capture, volume/cost control, and PII redaction.
+
+**Who it's for.** Data engineers, data/ML engineers, platform/architecture leads, and engineers preparing for senior/staff data-engineering interviews.
+
+**What you'll take away.** By the end you'll be able to:
+- Emit structured JSON logs with a stable schema and propagate one correlation ID from orchestrator through Spark, Kafka, and the table commit.
+- Capture ephemeral executor logs and aggregate at the partition boundary so logging doesn't become a volume bomb or a serialization error.
+- Use counted `WARN` events to surface silent row drops, redact PII at the logging layer, and choose hot/cold storage backends deliberately.
+
+---
+
 Logging in data engineering is not application logging with a Spark logo on it. A web service emits one log line per request and you index all of them. A Spark job emits 40,000 log lines per task across 2,000 tasks on 200 executors, and 99.9% of them are noise until the one minute they're the only thing standing between you and a 6-hour backfill. This chapter is about logging that survives that asymmetry: how to make logs that are cheap when nothing is wrong and decisive when something is.
 
 ## TL;DR

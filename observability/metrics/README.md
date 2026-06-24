@@ -2,6 +2,19 @@
 
 > Chapter from the **Data Engineering Playbook** — observability.
 
+## About This Chapter
+
+**What this is.** Metrics for data platforms: numeric measurements plus label sets sampled over time. This chapter covers instrument types, cardinality as a cost budget, percentiles over averages, push vs pull for batch jobs, and the data-shape signals that catch semantically wrong data.
+
+**Who it's for.** Data engineers, data/ML engineers, platform/architecture leads, and engineers preparing for senior/staff data-engineering interviews.
+
+**What you'll take away.** By the end you'll be able to:
+- Choose counters, gauges, or histograms correctly and compute percentiles from additive buckets across distributed executors.
+- Control cardinality as a deliberate budget and keep high-cardinality dimensions in logs/traces instead of detonating your TSDB.
+- Instrument freshness, volume, distribution, and cost-per-run on every table-writing job, and use Pushgateway/OTel correctly for ephemeral batch.
+
+---
+
 ## TL;DR
 
 - A metric is a **numeric measurement plus a label set, sampled over time** — not a log line, not an event. The label set (the cardinality) is what makes or breaks your cost and query latency, far more than the raw sample rate.

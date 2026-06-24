@@ -2,6 +2,20 @@
 
 > Chapter from the **Data Engineering Playbook** — data-modeling.
 
+## About This Chapter
+
+**What this is.** A snowflake schema is a star schema with one or more dimensions normalized into chains of related tables on their functional dependencies. This chapter is about deciding, per dimension and per engine, when normalizing one more level actually pays — and what it costs the people querying it.
+
+**Who it's for.** Data engineers, analytics engineers, platform/architecture leads, and engineers preparing for senior/staff data-engineering interviews.
+
+**What you'll take away.** By the end you'll be able to:
+- Argue snowflaking from governance, update isolation, and conformance rather than the weak storage-savings case on a columnar engine.
+- Apply the starflake middle ground — flatten by default, snowflake only large, multi-owned, volatile, or widely-shared dimensions.
+- Avoid the SCD2-on-multiple-levels temporal-range-join trap by resolving point-in-time keys at load and snapshotting them into the fact.
+- Separate physical from logical: keep normalized storage but expose flat views so BI tools see one clean join path and never fan-trap.
+
+---
+
 A snowflake schema is a star schema where one or more dimensions are normalized into a chain (or tree) of related tables instead of a single wide table. The fact table still sits at the center, but the dimension "points" of the star branch into sub-dimensions: `fact_sales → dim_product → dim_brand → dim_category`. The name comes from the resulting entity-relationship diagram, which looks like a snowflake crystal rather than a clean radial star.
 
 The interesting question is almost never "star vs snowflake" as a religious choice. It is: *for this specific dimension, on this specific engine, what does normalizing one more level actually buy me, and what does it cost the people writing queries against it?*

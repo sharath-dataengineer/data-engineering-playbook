@@ -2,6 +2,19 @@
 
 > Chapter from the **Data Engineering Playbook** — data-quality.
 
+## About This Chapter
+
+**What this is.** Accuracy is the data-quality dimension that asks whether a stored value matches the real-world fact it claims to represent. This chapter covers how to verify it against an independent reference — reconciliation, sampling, and statistical drift detection.
+
+**Who it's for.** data engineers, analytics engineers, platform/architecture leads, and engineers preparing for senior/staff data-engineering interviews.
+
+**What you'll take away.** By the end you'll be able to:
+- Choose between reconciliation, stratified sampling, and PSI/KS drift detection based on what reference (if any) actually exists for a fact.
+- Design a tolerance model (absolute floor + relative band) and reconcile at business-key grain to produce queryable, auto-classified break records.
+- Build a dollar-weighted accuracy gate that blocks promotion, and tie accuracy to determinism, fan-out invariants, and effective-dated reference data.
+
+---
+
 Accuracy is the dimension that asks: *does the value in the table match the real-world fact it claims to represent?* It is the hardest of the data-quality dimensions because it can't be checked from the data alone. A row can be present (completeness), arrive on time (freshness), be internally unique (validity), and still be wrong. A `subscription_status` of `active` for a customer who churned 40 days ago passes every schema check and every NOT NULL constraint, and it is still a lie. Detecting that lie requires a *reference* — a source of truth, an independent recomputation, or a statistical expectation — and the engineering is mostly about how you get and trust that reference.
 
 ## TL;DR

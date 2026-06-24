@@ -2,6 +2,19 @@
 
 > Chapter from the **Data Engineering Playbook** — spark-internals.
 
+## About This Chapter
+
+**What this is.** Project Tungsten is the execution-engine rewrite that moved Spark to off-heap binary rows (`UnsafeRow`) and whole-stage code generation. This chapter explains the binary format, WSCG, and how to keep the engine engaged so your CPU-bound stages stay fast.
+
+**Who it's for.** Data engineers, data/ML engineers, platform/architecture leads, and engineers preparing for senior/staff data-engineering interviews.
+
+**What you'll take away.** By the end you'll be able to:
+- Explain how `UnsafeRow` and whole-stage codegen turn a Volcano iterator chain into one JIT-friendly loop, and read the `*(n)` prefix in `explain()`.
+- Spot the silent codegen fallbacks — the 64KB method limit, 8KB JIT threshold, and `maxFields` cap — and fix them by projecting narrow and early.
+- Avoid the Tungsten off-ramps (plain UDFs, `collect_list`/`percentile`, off-heap container mis-sizing, the hash-aggregate sort-fallback cliff).
+
+---
+
 ## TL;DR
 
 - Tungsten is the execution-engine rewrite (Spark 1.4–2.0) that moved Spark from a JVM-object, iterator-per-row model to **off-heap binary rows** (`UnsafeRow`) and **whole-stage code generation** (WSCG). The premise: once shuffle and I/O were optimized, the bottleneck became the CPU — branch misprediction, virtual dispatch, and GC, not the disk.

@@ -2,6 +2,17 @@
 
 > Chapter from the Data Engineering Playbook — pipeline-patterns.
 
+## About This Chapter
+
+**What this is.** Idempotency means running a pipeline once or ten times produces the exact same result in the target table. This chapter shows the concrete patterns that make loads safely re-runnable across RDBMS, Hive/Parquet, Delta Lake, and Apache Iceberg.
+
+**Who it's for.** data engineers, analytics engineers, platform/architecture leads, and engineers preparing for senior/staff data-engineering interviews.
+
+**What you'll take away.** By the end you'll be able to:
+- Make retries and backfills safe using upsert/MERGE keyed on a business key, or DELETE-then-insert wrapped in a transaction.
+- Apply the right mechanism per engine: `ON CONFLICT`, dynamic partition overwrite, Delta `MERGE`/`replaceWhere`, and Iceberg `MERGE INTO`/`overwritePartitions()`.
+- Avoid the classic failure modes — static partition overwrite wiping a table, missing partition filters, and trusting upstream dedup.
+
 ---
 
 ## TL;DR

@@ -2,6 +2,19 @@
 
 > Chapter from the **Data Engineering Playbook** — finops.
 
+## About This Chapter
+
+**What this is.** Cost attribution maps each line item on the cloud bill back to the team, pipeline, or dataset that caused it. This chapter shows why it's fundamentally a join problem — the bill is keyed on resources, cost is caused by workloads — and how to bridge that with cloud tags, engine telemetry, and a usage-apportionment engine.
+
+**Who it's for.** Data engineers, platform/architecture leads, and engineering managers/tech leads.
+
+**What you'll take away.** By the end you'll be able to:
+- Build the three-layer model (CUR billing + engine telemetry + attribution engine) and apportion shared-cluster cost by a measured usage signal such as memory-GB-seconds.
+- Handle the hard 20–30%: idle capacity as an explicit line, storage via S3 Inventory, and data transfer via VPC Flow Logs — and enforce a reconciliation invariant that attributed cost equals the bill to the penny.
+- Track attribution coverage as an SLO and sequence showback before chargeback to keep the numbers politically defensible.
+
+---
+
 Cost attribution is the discipline of answering one question without hand-waving: *who spent this dollar, and on what?* On a data platform that means mapping a line item on the AWS bill — an EMR step, an EC2 instance-hour, a TB scanned by Athena, an S3 GET — back to the team, pipeline, dataset, or business product that caused it. Get this wrong and every downstream FinOps motion (showback, chargeback, budgets, optimization prioritization) is built on sand.
 
 ## TL;DR

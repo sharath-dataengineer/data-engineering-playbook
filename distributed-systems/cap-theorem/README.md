@@ -2,6 +2,19 @@
 
 > Chapter from the **Data Engineering Playbook** — distributed-systems.
 
+## About This Chapter
+
+**What this is.** The CAP theorem describes what a distributed system must give up — linearizable consistency (C) or total availability (A) — when the network partitions. This chapter covers what CAP actually constrains, why PACELC is the model that matters in the common no-partition case, and how to make the CP/AP choice per operation.
+
+**Who it's for.** Data engineers, platform/architecture leads, and engineers preparing for senior/staff data-engineering interviews.
+
+**What you'll take away.** By the end you'll be able to:
+- Separate the three meanings of "consistency" (CAP's linearizability, ACID's C, and consistency models) and reason with PACELC instead of "pick two."
+- Tune the CP/AP regime per read and per write using quorum math (`W+R>N`) and levers like Cassandra `CL`, DynamoDB consistent reads, and Kafka `unclean.leader.election`.
+- Label CAP at the access-path level, defaulting systems of record to CP and derived/cache layers to AP.
+
+---
+
 ## TL;DR
 
 - CAP is a statement about **one specific failure mode**: when the network partitions, a distributed system must give up either **linearizable consistency (C)** or **total availability (A)**. It says nothing about the no-partition case, and "pick two" is a misleading slogan.

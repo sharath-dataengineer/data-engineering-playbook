@@ -2,6 +2,19 @@
 
 > Chapter from the **Data Engineering Playbook** — spark-internals.
 
+## About This Chapter
+
+**What this is.** A broadcast hash join ships the small side of a join to every executor as a hash table, eliminating the shuffle on the large side. This chapter covers how it works through the driver, when Spark picks it, and the sharp edges that make it OOM or silently not fire.
+
+**Who it's for.** Data engineers, data/ML engineers, platform/architecture leads, and engineers preparing for senior/staff data-engineering interviews.
+
+**What you'll take away.** By the end you'll be able to:
+- Trace the build/probe data path and explain why the driver heap — not the executors — is the broadcast bottleneck.
+- Decide when broadcast is correct, account for compressed-on-disk vs deserialized-in-memory size, and apply hints and AQE runtime promotion safely.
+- Diagnose the classic failures (driver OOM, `broadcastTimeout`, wrong-side hint on an outer join, broken exchange reuse) from logs and the physical plan.
+
+---
+
 ## TL;DR
 
 - A broadcast hash join (`BroadcastHashJoinExec`) ships one side of the join to every executor as a read-only hash table, eliminating the shuffle on the large side. No shuffle means no exchange, no sort, and no skew on the join key.

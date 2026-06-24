@@ -2,6 +2,19 @@
 
 > Chapter from the **Data Engineering Playbook** — lakehouse.
 
+## About This Chapter
+
+**What this is.** Delta Lake is an ACID table format built on Parquet plus an ordered transaction log. This chapter covers how that log drives every guarantee, how `MERGE` and small-file accumulation drive cost, and how to wire `OPTIMIZE`, deletion vectors, and `VACUUM` into a table's lifecycle.
+
+**Who it's for.** Data engineers, data/ML engineers, platform/architecture leads, and engineers preparing for senior/staff data-engineering interviews.
+
+**What you'll take away.** By the end you'll be able to:
+- Reason about the `_delta_log`, checkpoints, and optimistic-concurrency commit protocol as the source of truth for a table.
+- Design partitioning, clustering, and deletion vectors so `MERGE` and CDC stay cheap instead of rewriting whole files.
+- Manage log/file retention, `VACUUM`, and protocol-feature upgrades without self-inflicting `FileNotFoundException` or locking out external readers.
+
+---
+
 ## TL;DR
 
 - Delta Lake is an ACID table format built on Parquet plus an ordered **transaction log** (`_delta_log/`). The log — not the files on disk — is the source of truth for what a table contains at any version.

@@ -2,6 +2,19 @@
 
 > Chapter from the **Data Engineering Playbook** — engineering-leadership.
 
+## About This Chapter
+
+**What this is.** Technical strategy as a constraint system — the small set of invariants you choose now that determine which engineering decisions stay cheap and which become catastrophic two years out. This chapter covers how to set, enforce, measure, and retire those constraints on a data platform.
+
+**Who it's for.** Platform/architecture leads, engineering managers/tech leads, and engineers preparing for senior/staff data-engineering interviews.
+
+**What you'll take away.** By the end you'll be able to:
+- Express strategy as enforceable pillars — scaffold defaults, CI guardrails, telemetry, and written revisit triggers — rather than a vision deck.
+- Separate one-way doors (schema contracts, table format, partitioning at scale, streaming engine) from two-way doors and match analysis budget to reversibility cost.
+- Sequence by option value, treat Conway's Law as a strategic input, run build-vs-buy as a pager-ownership and TCO decision, and design migrations to be abandonable mid-flight.
+
+---
+
 Technical strategy is the part of the principal job that has no PR attached to it. It is the set of constraints you choose *now* that determine which engineering decisions are cheap and which are catastrophic two years out. A good strategy is mostly a list of things you have decided *not* to build, written down with enough teeth that a staff engineer under deadline pressure can't quietly relitigate it in a Slack thread at 2am.
 
 ## TL;DR

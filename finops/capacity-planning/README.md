@@ -2,6 +2,19 @@
 
 > Chapter from the Data Engineering Playbook — finops.
 
+## About This Chapter
+
+**What this is.** Capacity planning is sizing compute, storage, and concurrency to meet SLAs at peak without over-committing dollars. This chapter treats SLA and cost as one optimization, modeling demand as a distribution and provisioning a baseline floor while letting burst capacity absorb the variance.
+
+**Who it's for.** Data engineers, platform/architecture leads, and engineering managers/tech leads.
+
+**What you'll take away.** By the end you'll be able to:
+- Run the measure→forecast→provision→reconcile loop, decomposing demand into trend, seasonality, and explicitly-budgeted events (backfills, launches).
+- Apply queueing reality (`ResponseTime ≈ ServiceTime/(1−ρ)`) and plan to the binding constraint — memory, shuffle, slots, or partitions — instead of vCPU alone.
+- Compute a commit floor (p5–p10) for Savings Plans, size additive recovery/burst/maintenance headroom, and verify a backfill converges with `P·R > λ` before launch.
+
+---
+
 Capacity planning is the discipline of buying the *right* amount of compute, storage, and concurrency *just before* you need it — not after a pager goes off, and not eighteen months early into a reserved-instance commitment you can't unwind. For a data platform this is harder than for a stateless web service: workloads are bursty (backfills, month-end close, holiday traffic), the unit of capacity is heterogeneous (vCPU, GB, slots, partitions, throughput-units), and the cost of getting it wrong shows up on two different ledgers — the AWS bill and the SLA dashboard.
 
 ## TL;DR

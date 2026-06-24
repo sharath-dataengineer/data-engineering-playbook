@@ -2,6 +2,19 @@
 
 > Chapter from the **Data Engineering Playbook** — observability.
 
+## About This Chapter
+
+**What this is.** Lineage is the directed graph of datasets and runs that answers "what feeds this number?" and "if I change this, what breaks?" This chapter covers column-level lineage captured at execution time, standardized on OpenLineage, and the workflows that make it pay off.
+
+**Who it's for.** Data engineers, analytics engineers, platform/architecture leads, and engineers preparing for senior/staff data-engineering interviews.
+
+**What you'll take away.** By the end you'll be able to:
+- Capture column-level lineage from Spark logical plans, dbt manifests, and Airflow runs rather than by parsing SQL files out of band.
+- Know exactly where column lineage degrades (UDFs, `explode`, `pivot`, dynamic SQL) and label edge confidence honestly.
+- Wire the graph into impact analysis, root-cause traversal, and freshness propagation, and keep it trustworthy with a canonical ID resolver and a coverage SLI.
+
+---
+
 Lineage is the graph that answers two questions every incident eventually forces you to answer: *"What feeds this number?"* and *"If I change this, what breaks?"* Everything else in this chapter is implementation detail in service of those two queries.
 
 ## TL;DR

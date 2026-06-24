@@ -2,6 +2,19 @@
 
 > Chapter from the **Data Engineering Playbook** — lakehouse.
 
+## About This Chapter
+
+**What this is.** Apache Hudi is the lake table format built for high-frequency, mutable workloads. This chapter covers its core machinery — file groups, the timeline, Copy-on-Write vs Merge-on-Read, the index, and the compaction/cleaning table services — and how those choices govern upsert latency and read cost.
+
+**Who it's for.** Data engineers, data/ML engineers, platform/architecture leads, and engineers preparing for senior/staff data-engineering interviews.
+
+**What you'll take away.** By the end you'll be able to:
+- Choose CoW vs MoR and the right index (Bloom, Bucket, Record Level Index) for a given CDC/upsert workload.
+- Tune compaction, cleaning, and the metadata table so a "low-latency" MoR table doesn't decay into read amplification and storage bloat.
+- Run end-to-end CDC ingestion with monotonic precombine, tombstone deletes, and the three MoR query types used safely.
+
+---
+
 Hudi (Hadoop Upserts Deletes and Incrementals) is the table format you reach for when the table *changes a lot* and you need either low write latency or cheap incremental reads. It was built at Uber to solve a specific problem: ingesting a high-volume CDC stream into a lake and serving it within minutes, without rewriting whole partitions on every batch. If you understand that origin, every design decision in Hudi — the timeline, file groups, Merge-on-Read, the record index — falls out logically.
 
 ## TL;DR

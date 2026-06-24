@@ -2,6 +2,17 @@
 
 > Chapter from the Data Engineering Playbook — pipeline-patterns.
 
+## About This Chapter
+
+**What this is.** A merge strategy is how new source data is reconciled into a target table. This chapter compares six — truncate+load, append-only, upsert, full sync with hard delete, soft delete, and SCD Type 2 — with worked SQL/PySpark for RDBMS, Delta, and Iceberg.
+
+**Who it's for.** data engineers, analytics engineers, platform/architecture leads, and engineers preparing for senior/staff data-engineering interviews.
+
+**What you'll take away.** By the end you'll be able to:
+- Choose a merge strategy from source shape (full extract vs. delta vs. CDC), delete requirements, history needs, and table size.
+- Implement upsert with an `updated_ts` change guard, full sync via snapshot or CDC delete feed, soft delete behind a view, and SCD2 close-and-insert across engines.
+- Avoid strategy-driven corruption — append-only duplicates on entity tables, ghost rows from upsert-without-delete, and `NOT IN` deletes that don't scale.
+
 ---
 
 ## TL;DR

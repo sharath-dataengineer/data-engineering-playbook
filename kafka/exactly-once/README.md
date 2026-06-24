@@ -2,6 +2,19 @@
 
 > Chapter from the **Data Engineering Playbook** — kafka.
 
+## About This Chapter
+
+**What this is.** Exactly-once semantics (EOS) in Kafka is the composition of the idempotent producer, transactions, and read-committed consumers. This chapter explains how those layers stack, where the guarantee actually holds, and where it silently breaks.
+
+**Who it's for.** data engineers, data/ML engineers, platform/architecture leads, and engineers preparing for senior/staff data-engineering interviews.
+
+**What you'll take away.** By the end you'll be able to:
+- Compose idempotent producer, transactions binding offset commit to output, and read-committed consumers into an end-to-end Kafka-native guarantee — and spot the silent `read_uncommitted` downgrade.
+- Recognize that EOS stops at the Kafka boundary and reach for idempotent sinks or the outbox pattern when writing to external systems.
+- Use stable `transactional.id`s for fencing, tune `commit.interval.ms`/`transaction.timeout.ms`, and diagnose a hung transaction freezing the Last Stable Offset.
+
+---
+
 ## TL;DR
 
 - "Exactly-once" in Kafka is not a magic flag. It is the composition of three mechanisms — the **idempotent producer** (dedupe within a partition via producer ID + sequence number), **transactions** (atomic multi-partition writes plus offset commits), and **read-committed consumers** (skip aborted records). Drop any one and you fall back to at-least-once.

@@ -2,6 +2,20 @@
 
 > Chapter from the Data Engineering Playbook — data-modeling.
 
+## About This Chapter
+
+**What this is.** The star schema is a dimensional model of one fact table at a declared grain surrounded by denormalized dimensions joined on surrogate keys. This chapter shows how to get the grain, keys, additivity, and merge logic right so the model holds up at billions of rows on a lakehouse.
+
+**Who it's for.** Data engineers, analytics engineers, platform/architecture leads, and engineers preparing for senior/staff data-engineering interviews.
+
+**What you'll take away.** By the end you'll be able to:
+- Write a grain statement and classify every measure as additive, semi-additive, or non-additive so aggregations stay correct.
+- Use surrogate keys and as-of binding to make Type 2 history and source-key churn survivable, and detect fan-out joins with a row-count assertion.
+- Handle late-arriving facts and early-arriving dimensions with inferred members and special keys instead of NULL FKs.
+- Replace RDBMS indexes with lakehouse physics: broadcast dimensions, partition the fact by date, Z-order on the next FKs, and let AQE absorb skew.
+
+---
+
 The star schema is the most boring, durable idea in analytics, and that's exactly why it survives every wave of warehouse technology. Teradata, Redshift, BigQuery, Snowflake, and now Iceberg-on-Spark lakehouses all reward the same shape: a narrow set of fat dimensions surrounding a tall, skinny fact. This chapter is about getting the grain, the keys, and the merge logic right so the model holds up when the fact table crosses 50 billion rows and twelve teams are joining against your dimensions.
 
 ## TL;DR

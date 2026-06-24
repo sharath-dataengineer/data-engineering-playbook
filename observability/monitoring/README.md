@@ -2,6 +2,19 @@
 
 > Chapter from the **Data Engineering Playbook** — observability.
 
+## About This Chapter
+
+**What this is.** Monitoring for data pipelines: defining what a healthy data product looks like and encoding it as signals that page only when a consumer promise is at risk. This chapter covers monitoring the data plane (not just execution), SLOs and error budgets, multi-burn-rate alerting, and fail-closed circuit breakers.
+
+**Who it's for.** Data engineers, platform/architecture leads, engineering managers/tech leads, and engineers preparing for senior/staff data-engineering interviews.
+
+**What you'll take away.** By the end you'll be able to:
+- Monitor volume, freshness, distribution, and reconciliation SLIs that catch silent partial successes a green DAG misses.
+- Set robust seasonality-aware baselines (median/MAD), measure at write time, and tie every page to an SLO and error budget with multi-burn-rate alerting.
+- Build a fail-closed gold-boundary circuit breaker and tier alerting by layer so stale-but-correct beats fresh-but-wrong without alert fatigue.
+
+---
+
 Monitoring is the discipline of deciding *what a healthy pipeline looks like* before it breaks, then encoding that definition as machine-checked signals that page a human only when a customer-visible promise is at risk. For data systems this is harder than for stateless services: a job can exit `0`, emit no errors, and still corrupt the gold layer. This chapter is about closing that gap.
 
 ## TL;DR

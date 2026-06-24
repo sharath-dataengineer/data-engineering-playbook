@@ -2,6 +2,20 @@
 
 > Chapter from the **Data Engineering Playbook** — data-modeling.
 
+## About This Chapter
+
+**What this is.** Slowly Changing Dimensions are the per-attribute strategies (Types 0-6) for what a pipeline does when a dimension's source value changes. This chapter focuses on Type 2 — versioned history, validity windows, and the merge mechanics that make "what was true on the order date" reproducible to the cent.
+
+**Who it's for.** Data engineers, analytics engineers, platform/architecture leads, and engineers preparing for senior/staff data-engineering interviews.
+
+**What you'll take away.** By the end you'll be able to:
+- Choose an SCD type per attribute rather than per table, and combine Type 0/1/2/3 in one dimension.
+- Implement a correct Type 2 chain with half-open intervals, a `9999-12-31` sentinel, exactly-one-current invariant, and a deterministic hash surrogate key.
+- Make the load idempotent and out-of-order-safe with a source ordering key, hash-diff on the right columns, and an interval-rebuild path for late arrivals.
+- Ship the close-then-insert Iceberg merge with post-merge assertions, and account for compaction on this insert-heavy workload.
+
+---
+
 A slowly changing dimension is the data model's answer to a deceptively simple business question: *what did this customer's address, plan tier, or sales region look like on the day the order was placed?* Get the SCD strategy wrong and your revenue-by-region report silently rewrites history every night. Get it right and you can re-run any quarter's close and reproduce the number to the cent.
 
 ## TL;DR

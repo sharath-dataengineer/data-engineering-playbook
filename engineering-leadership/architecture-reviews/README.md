@@ -2,6 +2,19 @@
 
 > Chapter from the **Data Engineering Playbook** — engineering-leadership.
 
+## About This Chapter
+
+**What this is.** An architecture review is the forum where a data-platform design is pressure-tested while it's still cheap to change. This chapter covers how to run one as a risk-reduction transaction rather than an approval ceremony.
+
+**Who it's for.** Platform/architecture leads, engineering managers/tech leads, data engineers, and engineers preparing for senior/staff data-engineering interviews.
+
+**What you'll take away.** By the end you'll be able to:
+- Gate a review on a numeric load profile and classify decisions by reversibility (one-way vs two-way doors) so the hour goes to the irreversible choices.
+- Trace the failure modes that demos hide — small-files/shuffle math, dual-write divergence, missing backfill paths, and absent cost models.
+- Drive every review to a durable output: a de-risked design plus an ADR recording rejected alternatives and revisit triggers.
+
+---
+
 An architecture review is the most leveraged hour a principal engineer spends all week. It is the only point in the lifecycle where a design is still cheap to change and expensive mistakes are still hypothetical. Done well, it converts a vague RFC into a load-bearing decision the team can build against for two years. Done badly, it becomes a rubber-stamp meeting where the loudest person ships the riskiest design. This chapter is about running them so they do the former.
 
 ## TL;DR
