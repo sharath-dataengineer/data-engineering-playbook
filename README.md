@@ -5,7 +5,7 @@
 <p><em>Book-chapter-depth notes on the systems, patterns, and tradeoffs behind production data platforms.</em></p>
 
 <p>
-  <img src="https://img.shields.io/badge/Chapters-62-0A66C2?style=flat-square" alt="Chapters"/>
+  <img src="https://img.shields.io/badge/Chapters-63-0A66C2?style=flat-square" alt="Chapters"/>
   <img src="https://img.shields.io/badge/Spark-Internals%20%7C%20Tuning-E25A1C?style=flat-square&logo=apachespark&logoColor=white" alt="Spark"/>
   <img src="https://img.shields.io/badge/Kafka-Streaming-231F20?style=flat-square&logo=apachekafka&logoColor=white" alt="Kafka"/>
   <img src="https://img.shields.io/badge/Lakehouse-Iceberg%20%7C%20Delta%20%7C%20Hudi-22C55E?style=flat-square" alt="Lakehouse"/>
@@ -66,6 +66,7 @@ Each chapter follows the same shape: a **TL;DR** you can read in 60 seconds, a *
 |---|---|
 | [Kubernetes for Data Engineering](infrastructure/kubernetes/README.md) | Running Spark and Airflow on K8s, pod sizing, resource quotas, debugging, vs managed services |
 | [Terraform for Data Infrastructure](infrastructure/terraform/README.md) | IaC for S3, EMR, Glue, Kafka, Redshift — versioned, repeatable data stack provisioning |
+| [AWS CloudFormation for Data Engineering](infrastructure/cloudformation/README.md) | AWS-native IaC: templates, stacks, change sets, nested stacks, StackSets for multi-account deployments |
 | [CI/CD for Data Pipelines](infrastructure/ci-cd/README.md) | Testing pyramid, automated deployment, rollback strategies, schema checks in CI |
 
 ### 🔒 Governance & Security
