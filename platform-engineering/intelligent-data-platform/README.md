@@ -4,37 +4,37 @@
 
 ## About This Chapter
 
-**What this is.** Both a conceptual map of what an intelligent data platform actually is — a perceive→reason→act loop over a legible metadata substrate, with observability AI, GenAI surfaces, and agents on top — and a phased migration guide for turning an existing "dumb" S3 + Spark + Airflow lake into one.
+**What this is.** A plain-language guide to what an "intelligent data platform" actually means — and how to build one. Covers what separates a smart platform from a dumb one, the foundation you must build before any AI feature will work, and a step-by-step plan for upgrading an existing S3 + Spark + Airflow data lake.
 
-**Who it's for.** Platform/architecture leads, data/ML engineers, engineering managers/tech leads, and engineers preparing for senior/staff data-engineering interviews.
+**Who it's for.** Mid-level and senior data engineers, platform leads, and engineering managers curious about where data platforms are heading. No AI or ML background required — the concepts are explained as you go.
 
 **What you'll take away.** By the end you'll be able to:
-- Place a platform on the 0–4 maturity ladder and explain why intelligence is earned bottom-up, not bolted on as an LLM over an ungoverned lake.
-- Build the five-component substrate (metadata-rich table format, technical + business catalog, OpenLineage, contracts, semantic layer + vector store) that every AI surface depends on.
-- Stand up the three intelligence pillars — observability AI, GenAI surfaces (metadata copilot, NL-to-SQL through a semantic layer, RAG), and guardrailed agents — and sequence the migration so each phase ships value.
+- Describe the four maturity levels (manual → observable → AI-assisted → agentic) and explain why you cannot skip levels.
+- Name the five things a platform needs in place before AI features will work reliably — and why skipping them leads to wrong, hallucinated answers.
+- Explain the three AI capabilities every intelligent platform should have (anomaly detection, natural-language Q&A, and automated agents), and know which to build first.
 
 ---
 
-A data platform becomes *intelligent* when the platform itself — not just the analysts and ML teams on top of it — can perceive its own state, reason about it, and act on it. The pipelines stop being inert scripts that a human babysits and become a system that explains its own failures, answers questions about its own data in natural language, optimizes its own cost, and increasingly executes routine engineering work through agents. This chapter is two things at once: a **conceptual map** of what an intelligent data platform actually is (past the marketing), and a **migration guide** for taking an existing "dumb" data lake and turning it into one — phase by phase, with the prerequisites named honestly.
+A data platform becomes *intelligent* when the platform itself — not just the people using it — can watch its own health, explain what went wrong, answer questions about its own data in plain English, fix routine problems automatically, and increasingly handle engineering tasks through AI agents. Think of the difference between a pipeline that silently fails at 3am and one that sends you a message saying: "the orders mart is stale because the upstream topic changed its schema — here are the downstream tables affected and a suggested fix." This chapter covers two things: a **plain-language explanation** of what an intelligent data platform actually is (cutting through the buzzwords), and a **step-by-step migration plan** for turning an existing data lake into one — with the prerequisites named honestly.
 
 ---
 
 ## TL;DR
 
-- **An intelligent data platform = a conventional data platform (storage + compute + orchestration) + a metadata/semantic substrate + an intelligence layer (observability AI, GenAI interfaces, and agents) that closes the loop from *perceive → reason → act*.** Remove any one of the three and you don't have it.
-- **The substrate is the hard part, not the LLM.** GenAI and agents are only as good as the metadata, lineage, contracts, and semantic layer they reason over. A lake with no catalog, no lineage, and no column descriptions cannot be made "intelligent" by bolting an LLM on top — you'll get confident hallucinations. **The 80% of the work is making your platform legible to a machine.**
+- **An intelligent data platform = a conventional data platform (storage + compute + orchestration) + a metadata foundation the AI can read from + an intelligence layer (anomaly detection, GenAI interfaces, and agents) that forms a feedback loop: the platform *watches itself → thinks about what it sees → takes action*.** Remove any one of the three and you don't have it.
+- **The metadata foundation is the hard part, not the AI model.** GenAI and agents are only as good as the metadata, lineage, contracts, and definitions they read from. A lake with no catalog, no lineage, and no column descriptions cannot be made "intelligent" by bolting an LLM on top — you'll get confident, wrong answers. **The 80% of the work is making your platform readable by machines — this is done before you touch any AI library.**
 - **There is a maturity ladder:** (0) scripts you babysit → (1) observable (metrics/lineage exist) → (2) assistive (GenAI answers questions, suggests fixes) → (3) automated (system remediates known issues) → (4) agentic (agents plan and execute multi-step work under guardrails). Skipping rungs fails.
-- **GenAI is *served by* the platform** primarily through three surfaces: **NL-to-SQL / conversational analytics**, a **metadata copilot** (discovery, lineage Q&A, impact analysis), and **RAG over your own data + docs**. All three need a **vector layer** and **clean, governed metadata**.
-- **Agentic data engineering** = giving an LLM-driven agent **tools** (catalog API, query engine, git, CI, orchestrator) plus **context** (lineage, schemas, runbooks) and a **guardrailed loop** so it can do real work — triage an incident, propose a backfill, write a dbt model, open a PR. The platform's job is to expose safe, typed tools and to contain blast radius.
-- **For a data lake specifically**, the switch requires: a **table format with rich metadata** (Iceberg/Delta over bare Parquet), a **technical + business catalog** (Unity Catalog / Glue + OpenMetadata / DataHub), **machine-readable lineage** (OpenLineage), **data contracts**, a **semantic layer**, and an **embeddings/vector store** for unstructured assets. These are the load-bearing prerequisites.
-- **Build vs buy:** buy the substrate primitives (catalog, observability, vector DB), build the thin intelligence glue that encodes *your* domain (semantic layer, agent tools, RAG retrieval). Don't build a vector database; do build the retrieval that knows your tables.
-- **For the engineer:** the skill that compounds over the next five years is *making systems legible to machines and wiring LLMs to act on them safely* — metadata modeling, retrieval design, tool/function-calling, eval, and guardrail engineering. SQL and Spark remain table stakes.
+- **Three GenAI features you can build on top of the platform:** (1) **NL-to-SQL** — users ask questions in plain English and get governed SQL answers; (2) a **metadata copilot** — ask "what feeds this table, who owns it, what's broken?" and get real answers; (3) **RAG** (Retrieval-Augmented Generation — a technique where the AI searches your own docs/data before answering) over your docs, runbooks, and past incidents. All three require clean, well-described metadata in place first.
+- **Agentic data engineering** = giving an AI model a set of **tools** (catalog API, query engine, git, CI, orchestrator) plus **background context** (lineage, schemas, runbooks) and a **loop** so it can do real engineering work — triage an incident, propose a backfill, write a dbt model, open a PR. The platform's job is to expose safe tools and limit what can go wrong.
+- **For a data lake specifically**, switching to intelligent requires: a **metadata-rich table format** (Iceberg/Delta instead of bare Parquet), a **catalog** (Unity Catalog / Glue + OpenMetadata / DataHub), **machine-readable lineage** (OpenLineage), **data contracts**, a **semantic layer** (defines what metrics mean), and a **vector store** (a database optimized for similarity search, used for AI retrieval). These are the prerequisites — skip them and nothing else works.
+- **Build vs buy:** buy the tools (catalog, observability platform, vector DB, LLM API), build the thin layer that encodes *your* domain — the retrieval logic that understands your tables, the agent tools that wrap your APIs, the guardrails that match your risk tolerance. Don't build a vector database; do build the retrieval that knows your tables.
+- **For the engineer:** the skill that compounds over the next five years is *making data systems readable by machines and wiring AI to act on them safely* — metadata modeling, retrieval design, tool/function-calling, and guardrail engineering. SQL and Spark remain table stakes; these are additive.
 
 ---
 
 ## What "Intelligent" Actually Means (and What It Doesn't)
 
-The phrase is abused. A dashboard with a chatbot stapled to the corner is not an intelligent data platform. To be precise, an intelligent data platform exhibits a **closed control loop** over its own operation and its own data:
+The phrase is overused. A dashboard with a chatbot stapled to the corner is not an intelligent data platform. The real definition: an intelligent data platform has a **closed feedback loop** — it watches its own state, figures out what it means, and takes action. Here's that loop:
 
 ```mermaid
 flowchart LR
@@ -48,17 +48,17 @@ flowchart LR
 
 Three properties distinguish it from a conventional platform:
 
-1. **Self-describing.** Every asset carries machine-readable metadata: schema, owner, semantics, lineage, freshness, quality, and cost. The platform can answer "what is this column, where did it come from, who depends on it, and is it trustworthy right now?" *without a human in the loop.*
-2. **Self-explaining.** When something breaks or drifts, the platform produces a *causal* explanation — not just "job failed," but "job failed because upstream topic `orders.v3` added a non-nullable field, which violated the contract on `silver.orders`, which will null three gold marts."
-3. **Self-acting (progressively).** It moves up a ladder from *suggesting* fixes, to *auto-remediating* known classes of problems, to *agents* that plan and execute novel multi-step work under human-approved guardrails.
+1. **Self-describing.** Every table and column carries machine-readable information: schema, owner, meaning, lineage, freshness, quality, and cost. The platform can answer "what is this column, where did it come from, who depends on it, and is it trustworthy right now?" *without a human looking it up.*
+2. **Self-explaining.** When something breaks or drifts, the platform produces a *specific* explanation — not just "job failed," but "job failed because upstream topic `orders.v3` added a non-nullable field, which violated the contract on `silver.orders`, which will break three downstream tables."
+3. **Self-acting (progressively).** It moves up a ladder from *suggesting* fixes, to *automatically fixing* known classes of problems, to *agents* that plan and execute multi-step work under guardrails.
 
-What it is **not**: it is not "we added a `text-to-sql` box." That's one feature on one surface. Intelligence is a property of the *whole loop*, and the loop is only as strong as the metadata substrate underneath it.
+What it is **not**: "we added a text-to-SQL box" is not an intelligent platform. That's one feature. Intelligence is a property of the *whole feedback loop*, and the loop is only as strong as the metadata foundation underneath it.
 
 ---
 
 ## The Maturity Ladder
 
-Most teams want to jump from Level 0 to Level 4. It doesn't work, because each level is the *substrate* for the next. You cannot have an agent safely backfill a table (L4) if you cannot detect that the table is broken (L1) or explain why (L2).
+Most teams want to jump from Level 0 to Level 4. It doesn't work, because each level is the *foundation* for the next. You cannot have an agent safely backfill a table (L4) if you cannot even detect that the table is broken (L1) or explain why (L2).
 
 | Level | Name | What the platform can do | What's required to get here |
 |---|---|---|---|
@@ -90,23 +90,23 @@ An intelligent platform attacks every one of these with the *same* underlying in
 - Cost → **per-job/per-partition attribution + an agent that proposes right-sizing**.
 - ML enablement → **a semantic layer + feature catalog** the GenAI surfaces query.
 
-The economic argument: each of these is usually treated as a separate tool purchase. They are actually **one substrate problem** with multiple front-ends. Build the substrate once; light up the surfaces incrementally.
+The business case: each of these is usually treated as a separate tool purchase. They are actually **one metadata foundation problem** with multiple front-ends. Build the foundation once; add the AI surfaces incrementally.
 
 ---
 
 ## The Architecture
 
-An intelligent data platform is a conventional platform with two additional planes: a **knowledge plane** (the substrate that makes everything legible) and an **intelligence plane** (the AI surfaces and agents). The data plane and control plane are what you already have.
+An intelligent data platform is a conventional platform with two additional layers added on top: a **knowledge layer** (the metadata foundation that makes everything readable by machines) and an **intelligence layer** (the AI features and agents). The data layer is what you already run.
 
 ```mermaid
 flowchart TB
-    subgraph DataPlane["Data Plane — what you already run"]
+    subgraph DataPlane["Data Layer — what you already run"]
         ING["Ingestion: Kafka, CDC, batch"] --> LAKE[("Lake: Iceberg/Delta on S3")]
         LAKE --> CMP["Compute: Spark / Trino / dbt"]
         CMP --> SERVE["Serving: marts, BI, APIs"]
     end
 
-    subgraph KnowledgePlane["Knowledge Plane — the substrate"]
+    subgraph KnowledgePlane["Knowledge Layer — metadata foundation"]
         CAT["Technical + Business Catalog"]
         LIN["Lineage — OpenLineage"]
         CONTRACT["Data Contracts + Schema Registry"]
@@ -128,54 +128,54 @@ flowchart TB
     style IntelligencePlane fill:#8B5CF6,color:#fff
 ```
 
-The arrows are the point. **The intelligence plane never touches raw data directly; it reasons over the knowledge plane.** This is what makes it safe, cheap, and accurate: an LLM answering "what feeds `dim_customer`?" reads the lineage graph, not 40 TB of Parquet. An agent proposing a backfill reads the contract and the partition metadata, not every row.
+The arrows are the point. **The AI layer never touches raw data directly — it reads from the metadata foundation.** This is what makes it safe, fast, and accurate: an LLM answering "what feeds `dim_customer`?" reads the lineage graph, not 40 TB of Parquet. An agent proposing a backfill reads the contract and the partition metadata, not every row.
 
 ---
 
-## The Substrate: What AI Actually Needs to Be Useful
+## The Metadata Foundation: What AI Actually Needs to Be Useful
 
-This is the unglamorous 80%. Skip it and every downstream surface degrades into a hallucination engine. The substrate has five load-bearing components.
+This is the unglamorous 80% of the work. Skip it and every AI feature you build will produce wrong or hallucinated answers. The foundation has five components — each one is a hard prerequisite for the AI features that follow.
 
-### 1. A table format with rich, queryable metadata
+### 1. A table format that stores rich metadata
 
-Bare Parquet on S3 is opaque — no schema evolution history, no snapshots, no statistics the platform can reason over. **Iceberg or Delta** give you: schema evolution as first-class metadata, snapshot/time-travel (so an agent can *diff* what changed), partition stats, and table properties. See [lakehouse/iceberg](../../lakehouse/iceberg/README.md) and [lakehouse/metadata-layers](../../lakehouse/metadata-layers/README.md).
+Plain Parquet files on S3 are a black box — no history of schema changes, no snapshots, no statistics the platform can query. **Iceberg or Delta Lake** change that: they store schema evolution history, snapshots you can time-travel through (so an agent can ask "what changed between yesterday and today?"), partition stats, and table properties. See [lakehouse/iceberg](../../lakehouse/iceberg/README.md) and [lakehouse/metadata-layers](../../lakehouse/metadata-layers/README.md).
 
-> Migration reality: moving from Hive/Parquet to Iceberg is itself a project. But it is the *first* prerequisite — an agent cannot ask "what changed in this table between yesterday and today?" if the table has no snapshot history.
+> Migration reality: moving from Hive/Parquet to Iceberg is a real project. But it is the *first* prerequisite — an agent cannot ask "what changed in this table between yesterday and today?" if the table has no snapshot history.
 
 ### 2. A catalog — technical *and* business
 
 - **Technical catalog** (Glue Data Catalog, Unity Catalog, Iceberg REST catalog): the machine-readable source of truth for tables, schemas, partitions, locations.
 - **Business catalog / metadata platform** (OpenMetadata, DataHub, Unity Catalog): owners, descriptions, tags, classifications (PII), glossary terms, SLAs.
 
-The business catalog is where **column descriptions** live — and column descriptions are *the single highest-leverage input to NL-to-SQL quality*. An LLM mapping "revenue" to a column does far better with `net_revenue_usd — net revenue after refunds, in USD, recognized at order completion` than with a bare column name `nr_usd`.
+The business catalog is where **column descriptions** live — and column descriptions are *the single most important input to NL-to-SQL quality*. An AI mapping "revenue" to a column does far better with `net_revenue_usd — net revenue after refunds, in USD, recognized at order completion` than with a bare column name `nr_usd`. Writing these descriptions is tedious but it is the highest-leverage thing you can do before adding any AI feature.
 
 ### 3. Machine-readable lineage
 
-[**OpenLineage**](../../observability/lineage/README.md) emitted from Spark/dbt/Airflow gives a column-level dependency graph. This is what powers impact analysis ("if I change this, what breaks?") and RCA ("this broke; what upstream changed?"). Lineage is the agent's map of the world. Without it, an agent reasoning about your platform is navigating blind.
+[**OpenLineage**](../../observability/lineage/README.md) is a standard that your Spark jobs, dbt models, and Airflow DAGs can emit to build a dependency graph — which table feeds which, down to the column level. This powers two critical features: impact analysis ("if I change this column, what tables break?") and root-cause analysis ("this broke — what upstream change caused it?"). Lineage is the AI's map of the platform. Without it, an agent reasoning about your platform is navigating blind.
 
-### 4. Data contracts + schema registry
+### 4. Data contracts
 
-A [data contract](../../data-quality/accuracy/README.md) is a machine-checkable promise about a dataset's schema, semantics, and SLAs. Contracts turn "silent null at 3am" into "failed PR at code-review time." For agents, contracts are the *constraints* that make autonomous action safe: an agent can propose a change and the contract tells it (and the CI gate) whether the change is breaking.
+A [data contract](../../data-quality/accuracy/README.md) is a machine-checkable agreement about a dataset's schema, meaning, and SLAs — a producer promising to consumers "this table will always have these columns, this freshness, these quality guarantees." Contracts turn "silent null discovered at 3am" into "broken PR caught at code-review time." For agents, contracts are also safety guardrails: an agent proposing a schema change can check the contract first to know whether the change will break downstream consumers.
 
 ### 5. A semantic layer and a vector store
 
-- **Semantic layer** (dbt Semantic Layer / MetricFlow, Cube, LookML): defines *metrics* (`weekly_active_sellers`, `net_revenue`) once, decoupled from physical tables. This is what lets NL-to-SQL be *correct* rather than *plausible* — the LLM maps language to defined metrics, not to raw columns it guesses at.
-- **Vector store** (pgvector, OpenSearch k-NN, Pinecone, Milvus — see [database-types](../../distributed-systems/database-types/README.md)): holds embeddings of table/column descriptions, documentation, runbooks, past incidents, and query history. This is the retrieval index for every RAG-based surface.
+- **Semantic layer** (dbt Semantic Layer / MetricFlow, Cube, LookML): a centralized place where business metrics are defined once — `weekly_active_sellers`, `net_revenue` — tied to the underlying tables. When a user asks "show me weekly revenue by region," the AI maps those words to *defined metrics* rather than guessing at raw column names. Without this, NL-to-SQL gives you plausible-but-wrong SQL.
+- **Vector store** (pgvector, OpenSearch k-NN, Pinecone, Milvus — see [database-types](../../distributed-systems/database-types/README.md)): a special database optimized for similarity search. You load it with your table/column descriptions, documentation, runbooks, and past incidents. When a user asks a question, the AI searches this store to find the most relevant context before answering. This is the index that every AI search feature uses.
 
-> **The litmus test for substrate readiness:** can a new engineer (or an LLM) answer, *for any table*, these five questions using only the platform — what is it, where did it come from, who owns it, is it fresh and correct right now, and what does it cost? If yes, you're ready to light up intelligence. If no, fix that first.
+> **The readiness test:** can a new engineer (or an AI) answer, *for any table*, these five questions using only the platform — what is it, where did it come from, who owns it, is it fresh and correct right now, and what does it cost to query? If yes, you're ready to add AI. If no, fix that first.
 
 ---
 
-## Pillar 1 — Observability AI: The Self-Operating Platform
+## Pillar 1 — Observability AI: The Self-Monitoring Platform
 
-This is the first intelligence surface to build because it has the clearest ROI and the lowest risk (it observes and suggests before it acts). It is "AIOps for data."
+Build this first — it has the clearest ROI and lowest risk because it watches and suggests before it ever acts autonomously.
 
-**Capabilities, in order of increasing autonomy:**
+**Four capabilities, in order from simplest to most autonomous:**
 
-1. **Anomaly detection** on freshness, volume, null-rates, and distributions — using auto-calibrated statistical baselines (e.g. mean ± 2σ over a 30-day partition history) rather than hand-set thresholds that rot.
-2. **LLM-augmented root-cause analysis**: ingest the failure context (stack trace, recent schema changes, upstream lineage, recent deploys) and have an LLM produce a ranked causal explanation and a suggested fix.
-3. **Predictive risk**: an ML model (e.g. LightGBM) that extracts features from in-flight stage metrics to predict failure *before* it happens, so the platform can pre-empt it.
-4. **Auto-remediation** of known classes: retry-with-tuned-config on OOM, auto-compact small files, quarantine a bad partition and re-run, scale the cluster for a detected volume spike.
+1. **Anomaly detection**: automatically flag freshness delays, unexpected row-count drops, spike in nulls, or distribution drift — using statistical baselines that self-calibrate over 30 days of history rather than hand-set thresholds that need constant babysitting.
+2. **AI-powered root-cause analysis (RCA)**: when a job fails, gather the failure context automatically (error, recent schema changes, upstream lineage, recent deploys) and ask an LLM to produce a ranked explanation and a suggested fix. This is what cuts on-call time dramatically.
+3. **Predictive failure detection**: an ML model that reads in-flight job metrics while a job is running and predicts whether it will fail — before it does — so the platform can pre-empt it.
+4. **Auto-remediation** of known problem classes: retry with adjusted config on OOM, auto-compact small files, quarantine a bad partition and re-run, scale the cluster when a volume spike is detected.
 
 ```mermaid
 flowchart LR
@@ -190,7 +190,7 @@ flowchart LR
     style FIX fill:#22C55E,color:#fff
 ```
 
-The confidence gate is the whole design. **High-confidence, known-class problems get auto-remediated; everything else pages a human — but with the RCA already attached**, which is where the 70% MTTR reduction comes from. The human starts at "here's the likely cause and fix," not "here's 4 GB of logs."
+The confidence gate is the key design decision. **High-confidence, known problems get fixed automatically. Everything else pages a human — but with the diagnosis already done.** The engineer starts at "here's the likely cause and fix," not "here's 4 GB of logs." This is where the dramatic reduction in incident response time (MTTR) comes from.
 
 This is the production pattern documented in [`pipeline-health-monitor`](https://github.com/sharath-dataengineer/pipeline-health-monitor) and extended toward full autonomy in [`autonomous-data-platform`](https://github.com/sharath-dataengineer/autonomous-data-platform).
 
@@ -202,12 +202,12 @@ Three surfaces, in rough order of value-to-effort:
 
 ### A. Metadata copilot (discovery, lineage, impact)
 
-The highest-ROI, lowest-risk GenAI surface — because it's *read-only over metadata*. Users ask:
+The best first AI feature to build — read-only over metadata, so nothing can go wrong. Users ask:
 - "Which table has net revenue by region?" → semantic search over the catalog.
 - "What feeds `dim_customer` and who owns it?" → lineage + catalog lookup.
 - "If I drop `orders.coupon_code`, what breaks?" → column-level lineage traversal.
 
-Architecture: **RAG over the knowledge plane.** Embed table/column descriptions, docs, and lineage into the vector store; retrieve relevant context; let the LLM compose the answer with citations back to catalog entries. This is exactly the [`metadata-copilot`](https://github.com/sharath-dataengineer/metadata-copilot) pattern.
+Architecture: **RAG (Retrieval-Augmented Generation) over your catalog.** Load your table/column descriptions, docs, and lineage into a vector store. When a user asks a question, retrieve the most relevant metadata and feed it to the LLM to compose an answer — with citations back to catalog entries. This is the [`metadata-copilot`](https://github.com/sharath-dataengineer/metadata-copilot) pattern.
 
 ```python
 # Sketch: metadata copilot retrieval (RAG over catalog + lineage)
@@ -233,11 +233,11 @@ def answer_metadata_question(question: str) -> Answer:
     )
 ```
 
-The `"answer ONLY from provided context… if insufficient, say so"` instruction is not optional — it is the difference between a copilot and a hallucination machine.
+The `"answer ONLY from provided context… if insufficient, say so"` instruction is not optional — it is the difference between a useful copilot and one that confidently makes things up.
 
 ### B. NL-to-SQL / conversational analytics
 
-Let users ask questions and get governed answers. The trap: naive NL-to-SQL against raw tables produces *confidently wrong* SQL. The fix is to **route through the semantic layer** so the LLM maps language → *defined metrics/dimensions*, and the semantic layer compiles the metric to correct SQL.
+Let users ask questions in plain English and get SQL answers. The common trap: pointing the AI directly at raw tables produces *confidently wrong* SQL because it guesses at column semantics. The fix is to **route through the semantic layer** — the AI maps the user's words to *pre-defined metrics and dimensions*, and the semantic layer compiles those to correct SQL.
 
 ```mermaid
 flowchart LR
@@ -248,21 +248,21 @@ flowchart LR
     style SEM fill:#0A66C2,color:#fff
 ```
 
-Accuracy hierarchy, best to worst: **(1) LLM → semantic layer metrics** (most reliable) → **(2) LLM → SQL with rich schema + descriptions + few-shot examples in context** → **(3) LLM → SQL over bare table names** (don't ship this). Always return the generated SQL for transparency, and gate writes/expensive scans.
+Quality ranking, best to worst: **(1) AI → semantic layer metrics** (most reliable, because metrics are pre-defined and unambiguous) → **(2) AI → SQL with rich schema + column descriptions + examples** → **(3) AI → SQL over bare table names with no descriptions** (do not ship this). Always show users the generated SQL so they can verify it, and never let NL-to-SQL run unbounded scans or writes.
 
-### C. RAG over your own data and documents
+### C. RAG over your own documents and history
 
-For unstructured and semi-structured assets — docs, tickets, contracts, support transcripts, past incident postmortems. Chunk, embed, index in the vector store, retrieve at query time. This is the foundation that also feeds the agents (a triage agent retrieves the relevant past incident; a modeling agent retrieves the relevant dbt conventions doc).
+For unstructured content — runbooks, past incident postmortems, data contracts, architecture docs, tickets. The process: break documents into chunks, convert each chunk into a vector embedding (a numerical representation of its meaning), store in the vector store, and retrieve relevant chunks at query time. This same pattern feeds the agents too — a triage agent retrieves the relevant past incident postmortem; a modeling agent retrieves the relevant dbt conventions doc.
 
 ---
 
 ## Pillar 3 — Agentic Data Engineering
 
-This is the frontier and the most misunderstood. An **agent** is an LLM given (a) a goal, (b) **tools** it can call, (c) **context** about the world, and (d) a **loop** that lets it observe tool results and decide the next action — all inside **guardrails**. Agentic data engineering means agents do real engineering work, not just answer questions.
+This is the frontier and the most misunderstood. An **agent** is an AI model that has been given: (a) a goal, (b) **tools** it can call (APIs, query engines, git), (c) **background context** about the platform, and (d) a **loop** so it can observe what each tool call returns and decide what to do next — all wrapped in **guardrails** that limit what it can break. Agentic data engineering means agents do real engineering work, not just answer questions.
 
 ### What an agent needs from the platform
 
-An agent is only as capable as the tools you expose and only as safe as the guardrails you wrap them in. The platform's job is **tool engineering**, not prompt engineering.
+An agent is only as capable as the tools you expose and only as safe as the guardrails you build around them. The platform's job when supporting agents is **tool engineering**, not prompt engineering.
 
 | The agent needs | The platform provides |
 |---|---|
@@ -296,42 +296,42 @@ flowchart TB
 
 ### MCP and the tool interface
 
-The emerging standard for exposing tools to agents is the **Model Context Protocol (MCP)** — a typed interface that lets an LLM discover and call your platform's capabilities (catalog, lineage, query, orchestration) the same way regardless of the model. Practically: wrap your platform APIs as MCP tools with clear schemas, and any MCP-capable agent can drive your platform safely. The discipline is the same as building a [self-service platform](../../platform-engineering/self-service-platforms/README.md) — a clean, typed, guardrailed API surface — except the consumer is an agent instead of a human.
+The emerging standard for exposing tools to agents is the **Model Context Protocol (MCP)** — a typed interface that lets an AI model discover and call your platform's capabilities (catalog, lineage, query, orchestration) in a consistent, safe way. In practice: wrap your platform APIs as MCP tools with clear input/output schemas, and any MCP-capable agent framework can drive your platform. Think of it as building a [self-service platform](../../platform-engineering/self-service-platforms/README.md) — a clean, typed API surface — except the consumer is an AI agent instead of a human engineer.
 
-> **The non-negotiable guardrail principle:** an agent's *default* capability is read-only. Every state-changing action is either (a) a proposal a human approves, or (b) reversible with a one-command rollback (which is exactly why Iceberg/Delta snapshots matter — an agent's write can be rolled back to the prior snapshot). Never give an agent unguarded `DELETE`/`DROP`/`overwrite` on production.
+> **The golden rule for agent safety:** an agent's *default capability is read-only*. Every action that changes state is either (a) proposed for a human to approve, or (b) reversible with a single rollback (this is exactly why Iceberg and Delta snapshots matter — any write an agent makes can be rolled back to the snapshot before it). Never give an agent unguarded `DELETE`/`DROP`/`overwrite` on production tables.
 
 ---
 
-## Migration Guide: From a "Dumb" Data Lake to an Intelligent Platform
+## Migration Guide: From a Conventional Data Lake to an Intelligent Platform
 
-The phased plan to take an existing S3 + Spark + Airflow lake (Level 0–1) to intelligence. Each phase is independently valuable — you ship value at every step, you don't do a year of substrate work before any payoff.
+A step-by-step plan for upgrading an existing S3 + Spark + Airflow lake (Level 0–1). Each phase delivers real value on its own — you do not do a year of foundation work and then flip a switch.
 
 ### Phase 0 — Honest assessment (1–2 weeks)
 
-Run the litmus test from above against a sample of 20 tables. For each, can the platform answer: *what / where-from / who-owns / fresh-and-correct / cost*? Score yourself on the maturity ladder. **You are almost certainly at Level 0–1.** That's fine — it's the normal starting point.
+Run the readiness test above on 20 of your most-used tables. For each, can someone answer: *what is it / where did it come from / who owns it / is it fresh and correct right now / what does it cost to run*? Score yourself honestly on the maturity ladder. **Most teams are at Level 0–1.** That is the normal starting point — there is no shame in it.
 
-### Phase 1 — Make the lake legible (the substrate; biggest effort, do it incrementally)
+### Phase 1 — Build the metadata foundation (biggest effort, do it incrementally)
 
 Priorities, in order:
 
-1. **Catalog everything.** Stand up Glue/Unity + a metadata platform (OpenMetadata/DataHub). Ingest existing tables. *Backfill column descriptions* — this is tedious but it is the fuel for every GenAI surface. (A documentation agent can draft these for human approval — your first AI win funds the substrate work.)
-2. **Emit lineage.** Turn on OpenLineage in Spark/dbt/Airflow. Now you have the dependency graph.
-3. **Adopt a metadata-rich table format** where it matters most — migrate high-value Hive/Parquet tables to **Iceberg or Delta** for snapshots, schema-evolution history, and stats. Don't boil the ocean; start with the tables that feed the most downstream assets.
-4. **Introduce contracts** on the highest-traffic producer→consumer boundaries first (the ones that cause the 3am incidents).
+1. **Catalog everything.** Set up Glue/Unity + a metadata platform (OpenMetadata/DataHub). Start ingesting your existing tables. Then *backfill column descriptions* — tedious, but this single task improves every AI feature you will build. (Tip: a documentation agent can draft descriptions for human review — your first AI win actually funds the rest of the foundation work.)
+2. **Emit lineage.** Enable OpenLineage from Spark, dbt, and Airflow. This gives you the dependency graph that powers both impact analysis and AI root-cause analysis.
+3. **Migrate to Iceberg or Delta** for your most important tables — the ones with the most downstream consumers. Move incrementally; do not try to migrate everything at once.
+4. **Add data contracts** on your highest-traffic producer→consumer boundaries first — the ones that have caused the 3am incidents.
 
-> Sequencing tip: catalog + lineage first (read-only, low-risk, immediately useful for humans), table-format migration and contracts second (more invasive).
+> Sequencing tip: catalog + lineage first (read-only, low-risk, immediately useful even before any AI), then table-format migration and contracts (more invasive).
 
-### Phase 2 — Light up observability AI (fast ROI, low risk)
+### Phase 2 — Add observability AI (fast ROI, low risk)
 
-With lineage + metrics flowing, build the anomaly detection + LLM-RCA loop (Pillar 1) in *suggest-only* mode. Measure MTTR before and after. This phase typically pays for the whole program because it directly cuts on-call pain and incident duration.
+With lineage and metrics flowing, build the anomaly detection + AI-RCA loop (Pillar 1) in *suggest-only* mode first — it flags problems and explains them, but a human still acts. Measure your mean time to resolution (MTTR) before and after. This phase typically pays for the whole program because it directly cuts on-call pain.
 
-### Phase 3 — Add the GenAI surfaces (human-facing value)
+### Phase 3 — Add GenAI surfaces (human-facing value)
 
-Stand up the **vector store**, embed your now-rich metadata, and ship the **metadata copilot** first (read-only, safe). Then add **NL-to-SQL through a semantic layer** for the top 10–20 metrics. Discovery and self-serve analytics improve immediately.
+Set up the vector store, load it with your now-rich metadata, and ship the **metadata copilot** first (read-only, very low risk). Then add **NL-to-SQL** for your top 10–20 metrics through the semantic layer. Self-serve analytics and data discovery improve right away.
 
-### Phase 4 — Introduce automation, then agents (highest value, highest care)
+### Phase 4 — Automate, then introduce agents (highest value, most care needed)
 
-Promote high-confidence observability suggestions to **auto-remediation** (Pillar 1, Level 3). Then introduce **agents** (Pillar 3) starting with read-only triage and documentation agents, graduating to approval-gated modeling/backfill/FinOps agents. Build **evals** before you let any agent near prod.
+Promote high-confidence observability suggestions to **auto-remediation** — the platform acts on known problem classes without waiting for a human. Then introduce **agents** starting with read-only triage and documentation agents, then graduation to approval-gated backfill/modeling/FinOps agents. Build an **eval suite** (a set of test cases that score agent quality) before any agent goes near production.
 
 ```mermaid
 flowchart LR
@@ -343,33 +343,32 @@ flowchart LR
     style P4 fill:#8B5CF6,color:#fff
 ```
 
-### What's specifically needed for a data lake (vs a warehouse)
+### What's different for a data lake vs a warehouse
 
-Warehouses (Snowflake/BigQuery) ship with a lot of the substrate built in — a catalog, statistics, often a semantic layer and even native vector + LLM functions. A **bare lake gives you none of it**, so the lake-specific gaps to close are:
+Managed warehouses (Snowflake, BigQuery) ship with a lot of the foundation already built — a catalog, statistics, often a semantic layer, and increasingly native AI/vector features. A **bare data lake gives you none of it**, so you must add it yourself:
 
-- **Table format**: Parquet → Iceberg/Delta (warehouses already have managed storage with metadata).
-- **Catalog**: you must run one (Glue/Unity/REST catalog); a warehouse has one natively.
-- **Statistics & snapshots**: Iceberg/Delta provide them; bare Parquet doesn't.
-- **A query engine for NL-to-SQL**: Trino/Athena/Spark SQL over the lake.
-- **Governance**: lake-side access control (Lake Formation / Unity Catalog) so the GenAI surfaces and agents respect row/column security.
+- **Table format**: migrate Parquet → Iceberg/Delta to get snapshots, schema history, and stats (warehouses already have this).
+- **Catalog**: you must run one (Glue/Unity Catalog/Iceberg REST catalog); warehouses have one natively.
+- **Query engine for NL-to-SQL**: Trino, Athena, or Spark SQL over the lake tables.
+- **Access control**: set up Lake Formation or Unity Catalog so that AI surfaces and agents respect row-level and column-level security.
 
-The upside of the lake: **open formats + open metadata mean the intelligence layer is portable** and not locked to one vendor's AI features. See [choosing-your-data-platform](../../platform-engineering/choosing-your-data-platform/README.md) for the warehouse-vs-lake tradeoff in depth.
+The payoff for doing the extra work: **open formats and open metadata make the intelligence layer portable** — you're not locked to one vendor's AI features. See [choosing-your-data-platform](../../platform-engineering/choosing-your-data-platform/README.md) for the warehouse-vs-lake tradeoff in depth.
 
 ---
 
 ## Build vs Buy
 
-| Layer | Default | Why |
+| Component | Recommendation | Why |
 |---|---|---|
-| Vector database | **Buy / managed** (pgvector, OpenSearch, Pinecone) | A solved problem; don't build a similarity-search engine |
-| Catalog + observability platform | **Buy** (Unity/OpenMetadata/DataHub; Monte Carlo for DQ if you don't want to build) | Mature category; integration is the work, not the engine |
-| LLM | **Buy / API** (Claude via Bedrock, etc.) | Obviously |
-| Semantic layer | **Buy/adopt** (dbt Semantic Layer, Cube) | Standardized; building your own metric engine is a tar pit |
-| **Retrieval that knows *your* tables** | **Build** | Nobody else can encode your domain's semantics and lineage |
-| **Agent tools / MCP surface for your platform** | **Build** | These wrap *your* APIs and *your* guardrails |
-| **Evals for your agents/NL-to-SQL** | **Build** | They encode *your* correctness bar |
+| Vector database | **Buy / use managed** (pgvector, OpenSearch, Pinecone) | Solved problem; don't build a similarity-search engine from scratch |
+| Catalog + observability platform | **Buy** (Unity Catalog, OpenMetadata, DataHub, Monte Carlo) | Mature tools exist; integration is the work, not the engine itself |
+| LLM | **Buy / API** (Claude via Bedrock, OpenAI, etc.) | No team should be training their own LLM |
+| Semantic layer | **Buy/adopt** (dbt Semantic Layer, Cube, LookML) | Building your own metric-definition engine is a major distraction |
+| **Retrieval logic that understands your tables** | **Build** | Nobody else can encode your domain's semantics, your naming conventions, your lineage |
+| **Agent tools for your platform** | **Build** | These wrap your specific APIs with your specific guardrails |
+| **Evals (test cases for your AI features)** | **Build** | They encode what "correct" means for your data and your use cases |
 
-The rule: **buy the engines, build the thin glue that encodes your domain.** The defensible, high-value work is the retrieval, the tools, the guardrails, and the evals — not the vector DB.
+The rule: **buy the engines, build the thin layer that encodes your domain.** The high-value, defensible work is the retrieval logic, the tools, the guardrails, and the evals — not the vector database.
 
 ---
 
@@ -377,14 +376,14 @@ The rule: **buy the engines, build the thin glue that encodes your domain.** The
 
 | Anti-pattern | What goes wrong | Fix |
 |---|---|---|
-| **LLM on top of an ungoverned lake** | Confident hallucinations; NL-to-SQL returns plausible wrong numbers | Build the substrate first; route NL-to-SQL through a semantic layer |
-| **Skipping the maturity ladder** | An L4 agent at an L0 platform has nothing legible to reason over | Earn intelligence bottom-up: observable → assistive → automated → agentic |
-| **Agents with unguarded write access** | One bad action drops/overwrites prod with no rollback | Read-only by default; approval gates; rely on Iceberg/Delta snapshots for reversibility |
-| **No column/metric descriptions** | NL-to-SQL and copilot quality is capped at "guessing from names" | Backfill descriptions (a doc agent can draft them); define metrics in a semantic layer |
-| **RAG without "answer only from context"** | The copilot invents tables and lineage | Strict grounding instruction + citations + "say so if insufficient" |
-| **Treating it as a tool purchase** | Five disconnected tools, five bills, no shared substrate | Recognize it's *one* substrate problem with multiple front-ends |
-| **No evals for the AI surfaces** | Quality silently regresses on model/prompt/schema changes | Build an eval suite; gate changes on it like any other CI test |
-| **Embedding raw rows of sensitive data** | PII leaks into the vector store and into prompts | Embed *metadata and docs*, not raw sensitive rows; respect governance in retrieval |
+| **Adding AI on top of an ungoverned lake** | Confident but wrong answers; NL-to-SQL returns plausible-looking incorrect SQL | Build the metadata foundation first; route NL-to-SQL through a semantic layer |
+| **Skipping maturity levels** | An agentic platform at Level 0 has nothing to reason over — the agent hallucinates | Earn intelligence bottom-up: observable → AI-assisted → automated → agentic |
+| **Giving agents write access with no guardrails** | One bad action drops or overwrites a production table with no way back | Read-only by default; approval gates for writes; Iceberg/Delta snapshots for rollback |
+| **No column or metric descriptions** | AI quality is capped at guessing from column names like `nr_usd` | Write column descriptions; define metrics in a semantic layer |
+| **RAG without a grounding instruction** | The copilot confidently invents tables, lineage, and column names that don't exist | Add "answer ONLY from provided context — if insufficient, say so" to every prompt |
+| **Buying five disconnected AI tools** | Five tools, five bills, no shared metadata layer — everything degrades | It's one metadata foundation problem with multiple front-ends on top |
+| **No evals (test cases) for AI features** | Quality silently degrades on every model/prompt/schema change | Build an eval suite; gate changes on test scores just like any other CI check |
+| **Embedding raw rows of sensitive data** | PII leaks into the vector store and shows up in AI responses | Embed metadata and documentation, not raw data rows; apply access controls in retrieval |
 
 ---
 
@@ -404,28 +403,28 @@ The rule: **buy the engines, build the thin glue that encodes your domain.** The
 
 ## A Learning Roadmap for the Data Engineer
 
-The skills that compound as platforms become intelligent. SQL/Spark/modeling remain table stakes — these are *additive*.
+SQL, Spark, and data modeling remain essential — these skills are additive on top of what you already know.
 
-1. **Metadata & semantics modeling** — catalogs, OpenLineage, data contracts, semantic layers (dbt Semantic Layer/MetricFlow). *This is the new core competency.* If you can make a platform legible, you can make it intelligent.
-2. **Retrieval engineering (RAG)** — chunking, embeddings, vector stores, hybrid search, grounding/citation discipline, context-window budgeting. See [database-types](../../distributed-systems/database-types/README.md) for the vector-DB landscape.
-3. **LLM application patterns** — prompt structure, function/tool calling, structured output, the difference between a chat wrapper and a grounded system.
-4. **Agentic patterns** — the perceive-reason-act loop, tool design, MCP, guardrails (approval gates, dry-run, blast-radius), memory.
-5. **Evaluation** — how to measure NL-to-SQL accuracy, RCA quality, agent task success; building eval suites and gating on them. *The teams that win at AI are the teams that can measure it.*
-6. **AI governance & safety** — PII handling in embeddings and prompts, access control that follows through to the AI surfaces, audit trails for agent actions.
-7. **The classic foundation, sharpened** — [idempotency](../../pipeline-patterns/idempotency/README.md) and snapshots become *safety primitives for agents* (reversible actions); [observability](../../observability/monitoring/README.md) becomes the agent's senses; [self-service API design](../../platform-engineering/self-service-platforms/README.md) becomes agent tool design.
+1. **Metadata and semantics modeling** — catalogs, OpenLineage, data contracts, semantic layers (dbt Semantic Layer/MetricFlow). *This is the most important new skill area.* If you can make a platform readable by machines, you can make it intelligent.
+2. **Retrieval engineering (RAG)** — how to chunk documents, create embeddings, search a vector store, and write grounding instructions that prevent hallucinations. See [database-types](../../distributed-systems/database-types/README.md) for the vector DB landscape.
+3. **LLM application patterns** — how to structure prompts, use function/tool calling, get structured JSON output, and build a grounded AI system (as opposed to a plain chatbot).
+4. **Agentic patterns** — the watch-think-act loop, how to design safe tools an agent can call, MCP, guardrails (approval gates, dry-run mode, blast-radius limits), and agent memory.
+5. **Evaluation** — how to measure whether your NL-to-SQL is correct, whether your RCA agent finds the right cause, whether your copilot hallucinates. *The teams that win at AI are the ones who can measure it.*
+6. **AI governance** — handling PII in embeddings and prompts, making sure access control carries through to AI surfaces, audit trails for agent actions.
+7. **Classic foundations, applied to AI** — [idempotency](../../pipeline-patterns/idempotency/README.md) and table snapshots become *rollback mechanisms for agent actions*; [observability](../../observability/monitoring/README.md) becomes the signals the AI reads; [self-service API design](../../platform-engineering/self-service-platforms/README.md) becomes how you design agent tools.
 
-> The honest framing for your own positioning: the engineer who thrives isn't the one who memorizes prompt tricks — it's the one who can architect the *substrate* that makes a platform legible to machines, then wire LLMs and agents to act on it *safely*. That's a data-platform-architecture skill with an AI layer, not an AI skill bolted onto a data engineer.
+> The honest framing: the data engineer who thrives over the next five years is not the one who learns the best prompts — it's the one who can build the *metadata foundation* that makes a platform readable by machines, then wire AI to act on it *safely*. That's a data platform architecture skill with an AI layer, not an AI skill bolted onto a data engineer.
 
 ---
 
 ## Interview & Architecture-Review Talking Points
 
-- **"What makes a data platform 'intelligent' vs. a platform with a chatbot?"** — A closed perceive→reason→act loop over a *legible metadata substrate*. A chatbot is one surface; intelligence is a property of the whole loop, gated by the quality of the substrate underneath.
-- **"Where do you start if leadership wants an AI data platform tomorrow?"** — Assess maturity honestly, then build substrate (catalog + lineage + descriptions) before surfaces. The fastest visible ROI is observability AI (LLM-RCA in suggest-only mode); the safest first GenAI surface is a read-only metadata copilot.
-- **"Why does NL-to-SQL fail in practice and how do you fix it?"** — Naive NL→SQL over raw tables produces confidently-wrong queries. Route through a semantic layer so the LLM maps language to *defined metrics*, give it rich column descriptions and few-shot examples, return the generated SQL, and gate expensive/writing queries.
-- **"How do you make an agent safe in production?"** — Read-only by default, typed tools, approval gates on state changes, blast-radius limits, reversibility via Iceberg/Delta snapshots, full audit log, and an eval suite gating any change. The agent proposes; the platform constrains.
-- **"What's special about doing this on a lake vs a warehouse?"** — A bare lake lacks the built-in substrate (catalog, stats, semantic layer, vector functions) a warehouse ships with. You must add a metadata-rich table format (Iceberg/Delta), a catalog, and a query engine — but you gain portability and avoid vendor lock-in on the AI layer.
-- **"Build or buy?"** — Buy the engines (vector DB, catalog, LLM, semantic layer); build the thin glue that encodes your domain (retrieval, agent tools, guardrails, evals). The defensible value is in the glue.
+- **"What makes a data platform 'intelligent' vs. a platform with a chatbot?"** — A chatbot is one feature on one surface. An intelligent platform has a closed feedback loop: it watches its own state, reasons about what it sees, and takes action — and that loop is only as strong as the metadata foundation underneath it.
+- **"Where do you start if leadership wants an AI data platform tomorrow?"** — Assess honestly where you are on the maturity ladder, then build the metadata foundation (catalog + lineage + column descriptions) before any AI surface. Fastest ROI: observability AI with root-cause analysis in suggest-only mode. Safest first AI feature: a read-only metadata copilot.
+- **"Why does NL-to-SQL fail in practice and how do you fix it?"** — Pointing AI directly at raw tables produces confidently wrong SQL. Fix: route through a semantic layer so the AI maps words to pre-defined metrics, give it rich column descriptions and examples, return the generated SQL to users, and gate expensive queries.
+- **"How do you make an agent safe in production?"** — Read-only by default, typed tools with clear schemas, human approval gates on all state changes, blast-radius limits, reversibility via Iceberg/Delta snapshots, full audit trail, and an eval suite. The agent proposes; the platform constrains.
+- **"What's different about doing this on a data lake vs a warehouse?"** — A managed warehouse ships with built-in catalog, statistics, semantic layer, and increasingly AI features. A bare lake ships with none of it — you add Iceberg/Delta, a catalog, and a query engine yourself. The tradeoff: more setup work upfront, but you keep portability and avoid vendor lock-in on the AI layer.
+- **"Build or buy?"** — Buy the engines (vector DB, catalog, LLM API, semantic layer); build the thin layer that encodes your domain (retrieval logic, agent tools, guardrails, evals). The defensible value is in that thin layer.
 
 ---
 
