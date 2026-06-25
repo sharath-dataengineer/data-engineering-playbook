@@ -4,14 +4,14 @@
 
 ## About This Chapter
 
-**What this is.** Completeness is proving that every row that should exist does, and that the columns you depend on are actually populated. This chapter covers row vs. attribute completeness, where the "expected" reference comes from, and how to enforce it as a promotion gate.
+**What this is.** Completeness is proving that every row that should exist does, and that the columns you depend on are actually populated. This chapter covers row vs. attribute completeness, where the "expected" reference comes from, and how to enforce it as a promotion gate (a checkpoint that blocks bad data from moving to the next stage).
 
-**Who it's for.** data engineers, analytics engineers, platform/architecture leads, and engineers preparing for senior/staff data-engineering interviews.
+**Who it's for.** Mid-level data engineers, analytics engineers, platform/architecture leads, and engineers preparing for senior/staff data-engineering interviews.
 
 **What you'll take away.** By the end you'll be able to:
-- Separate row completeness from attribute completeness and source an independent reference cardinality (control file, source count, partition expectation, or forecast band).
-- Disambiguate structural NULLs from lost values, handle sentinels and conditional denominators, and check completeness per segment rather than table-wide.
-- Implement watermark-sealed two-tier verdicts for streaming and wire a failed completeness assertion as a blocking gate before `staging → gold`.
+- Separate row completeness from attribute completeness and source an independent reference cardinality (a count of how many records are expected, from a control file, source count, partition expectation, or forecast band).
+- Distinguish structural NULLs (nulls that are expected by design) from lost values (nulls caused by pipeline failures), handle sentinel values (fake non-null values like `"N/A"` or `"-1"` that represent missing data), and check completeness per segment rather than table-wide.
+- Implement watermark-sealed (time-bounded) two-tier verdicts for streaming pipelines, and wire a failed completeness assertion as a blocking gate before `staging → gold`.
 
 ---
 
@@ -20,19 +20,19 @@ Completeness is the discipline of proving that *every row that should exist, doe
 ## TL;DR
 
 - Completeness has two distinct axes that get conflated: **row completeness** (did all expected records arrive?) and **attribute completeness** (are the columns that matter actually populated?). They fail for different reasons and need different checks.
-- The hard part isn't counting nulls — it's establishing **what "complete" means** when you have no external truth. You need a *reference cardinality*: an upstream count, a control file, a partition expectation, or a forecast band.
-- Absolute thresholds (`null_rate < 1%`) rot. Use **relative, distribution-aware checks** anchored on historical baselines and partition keys, or you will drown in false pages on Black Friday and miss a 40% drop on a Tuesday.
-- Late and out-of-order arrival means completeness is a function of *time*, not a single verdict. A partition is "incomplete" at T+0 and "complete" at T+6h — your checks must understand watermarks.
-- Distinguish **structurally absent** (NULL because the business event didn't happen) from **lost** (NULL because the pipeline ate it). Treating both as "missing" produces alerts engineers learn to ignore.
+- The hard part isn't counting nulls — it's establishing **what "complete" means** when you have no external truth. You need a *reference cardinality* (an independently sourced count of how many records should exist): an upstream count, a control file, a partition expectation, or a forecast band.
+- Absolute thresholds (`null_rate < 1%`) rot over time. Use **relative, distribution-aware checks** anchored on historical baselines and partition keys, or you will drown in false pages on Black Friday and miss a 40% drop on a Tuesday.
+- Late and out-of-order arrival means completeness is a function of *time*, not a single verdict. A partition is "incomplete" at T+0 and "complete" at T+6h — your checks must understand watermarks (the point in time after which you consider a data window closed).
+- Distinguish **structurally absent** (NULL because the business event didn't happen) from **lost** (NULL because the pipeline dropped it). Treating both as "missing" produces alerts that engineers learn to ignore.
 - Wire completeness as a **gate**, not a report. A failed completeness assertion should stop promotion from `staging` to `gold`, not show up red on a dashboard the next morning.
 
 ## Why this matters in production
 
-A concrete scenario from a clickstream-to-revenue pipeline. Events land in Kafka, a Spark Structured Streaming job writes them to a Bronze Iceberg table, an hourly batch aggregates to Silver, and a daily job rolls up to a Gold `daily_revenue_by_channel` table that the CFO's dashboard reads.
+A concrete scenario from a clickstream-to-revenue pipeline. Events land in Kafka (a distributed message queue), a Spark Structured Streaming job writes them to a Bronze Iceberg table (a raw landing table), an hourly batch aggregates to Silver, and a daily job rolls up to a Gold `daily_revenue_by_channel` table that the CFO's dashboard reads.
 
-One day an upstream team ships a mobile SDK update that changes the `channel` enum from `mobile` to `mobile_ios` / `mobile_android`. Nothing breaks. Schemas are compatible (`channel` is still a string). Row counts in Bronze are normal. But the Gold rollup has a `WHERE channel IN ('web','mobile','email')` filter buried in it from 2021. Result: 30% of revenue silently falls out of the Gold table. Every individual stage passes its own checks. The sums are internally consistent. The only signal is that `daily_revenue` is lower than yesterday — and yesterday was a Sunday, so "lower" looked plausible.
+One day an upstream team ships a mobile SDK update that changes the `channel` enum (a field with a fixed set of allowed values) from `mobile` to `mobile_ios` / `mobile_android`. Nothing breaks. Schemas are compatible (`channel` is still a string). Row counts in Bronze are normal. But the Gold rollup has a `WHERE channel IN ('web','mobile','email')` filter buried in it from 2021. Result: 30% of revenue silently falls out of the Gold table. Every individual stage passes its own checks. The sums are internally consistent. The only signal is that `daily_revenue` is lower than yesterday — and yesterday was a Sunday, so "lower" looked plausible.
 
-This is the canonical completeness failure: **no single stage is wrong, but the data that reaches the consumer is incomplete relative to the source of truth.** Completeness checks exist to make that invisible loss loud. The fix is not "add more nulls checks" — it's establishing reference cardinality at each hop and reconciling against it. (See [reconciliation](../reconciliation/) for the cross-system count-matching that catches exactly this.)
+This is the canonical completeness failure: **no single stage is wrong, but the data that reaches the consumer is incomplete relative to the source of truth.** Completeness checks exist to make that invisible loss loud. The fix is not "add more nulls checks" — it's establishing reference cardinality at each hop and reconciling against it.
 
 ## How it works
 
@@ -62,13 +62,13 @@ Four ways to source the *expected* value, in rough order of trustworthiness:
 
 ### Attribute completeness math
 
-For a column `c` over a partition `p`, the metric is the **populated rate**:
+Attribute completeness measures whether the values inside a column are actually filled in — not just whether the column exists. For a column `c` over a partition `p`, the metric is the **populated rate**:
 
 ```
 populated_rate(c, p) = (rows where c IS NOT NULL AND c <> '') / total_rows(p)
 ```
 
-Note `c <> ''` and the explicit handling of sentinel values (`'N/A'`, `'-1'`, `'1970-01-01'`, `'\\N'`). A naive `IS NOT NULL` check passes happily while the column is 100% empty strings. This is the single most common attribute-completeness false-negative.
+Note `c <> ''` and the explicit handling of sentinel values (`'N/A'`, `'-1'`, `'1970-01-01'`, `'\\N'`). Sentinel values are placeholder values that look non-null but actually represent missing data. A naive `IS NOT NULL` check passes happily while the column is 100% empty strings. This is the single most common attribute-completeness false-negative.
 
 For **conditional completeness** — the column is only required when some predicate holds — the denominator changes:
 
@@ -76,11 +76,11 @@ For **conditional completeness** — the column is only required when some predi
 conditional_populated_rate = (rows where required AND c IS NOT NULL) / (rows where required)
 ```
 
-Example: `shipping_address` is only required when `order_type = 'physical'`. Checking it globally produces a permanently "incomplete" column because digital orders have no shipping address — that's *structural absence*, not a defect.
+Example: `shipping_address` is only required when `order_type = 'physical'`. Checking it globally produces a permanently "incomplete" column because digital orders have no shipping address — that's *structural absence* (a NULL that is correct by design), not a defect.
 
 ### Row completeness with watermarks
 
-For streaming/late-arriving data, completeness is time-dependent. Define a watermark `W` and an allowed lateness `L`. A window `[t, t+Δ)` is considered *sealed* (eligible for a final completeness verdict) only when `event_time_watermark >= t + Δ + L`. Before that, you report `completeness_so_far`, not `complete: false`. Conflating "not yet complete" with "incomplete" is what generates 3 a.m. pages that resolve themselves by 6 a.m.
+For streaming or late-arriving data, completeness depends on time. Define a watermark `W` (the latest event time seen so far) and an allowed lateness `L` (the extra time you wait for straggling events). A window `[t, t+Δ)` is considered *sealed* (eligible for a final completeness verdict) only when `event_time_watermark >= t + Δ + L`. Before that, you report `completeness_so_far`, not `complete: false`. Conflating "not yet complete" with "incomplete" is what generates 3 a.m. pages that resolve themselves by 6 a.m.
 
 ## Deep dive
 
@@ -98,7 +98,7 @@ A NULL in a downstream column can mean at least five different things:
 | Parse/cast failure swallowed | `to_date()` returned NULL on a bad format | **Yes** — silent corruption |
 | Upstream lost the value | Field present at source, NULL after ingest | **Yes** — pipeline bug |
 
-The first two inflate your null rate and train people to ignore the metric. The fix is to **scope completeness checks to columns and conditions where population is contractually expected**, and to separately track *cast-failure nulls* by counting them at the point of transformation (a `try_cast` that nulls out should increment a counter, not vanish).
+The first two inflate your null rate and train people to ignore the metric. The fix is to **scope completeness checks to columns and conditions where population is contractually expected**, and to separately track *cast-failure nulls* (nulls produced when data-type conversion fails) by counting them at the point of transformation. A `try_cast` that nulls out should increment a counter, not vanish silently.
 
 ### 2. Aggregate thresholds hide localized loss
 
@@ -106,19 +106,19 @@ A 1% global null-rate threshold on a 2-billion-row table is useless. If one cust
 
 ### 3. The denominator is the bug
 
-Most "completeness check passed but data was wrong" postmortems trace to a wrong denominator. If your expected count comes from the same pipeline that produced the observed count, you're checking the pipeline against itself — it will always agree, including when both are wrong. **The reference must be independent of the path being validated.** A control file from upstream, or a direct source query, breaks the circularity. Self-referential completeness checks are theater.
+Most "completeness check passed but data was wrong" postmortems trace to a wrong denominator. If your expected count comes from the same pipeline that produced the observed count, you're checking the pipeline against itself — it will always agree, including when both are wrong. **The reference must be independent of the path being validated.** A control file from upstream, or a direct source query, breaks the circularity. Self-referential completeness checks (checking a pipeline's output against its own intermediate counts) are theater.
 
 ### 4. Re-delivery and dedup inflate completeness past 100%
 
-At-least-once delivery from Kafka means you can observe *more* rows than expected after a consumer restart and offset replay. If your check is `observed >= expected`, duplicates make incompleteness look like over-completeness, masking real loss. You need exactly-once semantics or idempotent dedup *before* the completeness comparison, or you must compare on **distinct business keys**, not raw row counts. (See [exactly-once](../../kafka/exactly-once/) and [offsets](../../kafka/offsets/).)
+At-least-once delivery from Kafka (a delivery guarantee where messages may arrive more than once after a consumer restart) means you can observe *more* rows than expected after a consumer restart and offset replay. If your check is `observed >= expected`, duplicates make incompleteness look like over-completeness, masking real loss. You need exactly-once semantics or idempotent dedup (making re-delivered records harmless by deduplicating on a unique key) *before* the completeness comparison, or you must compare on **distinct business keys**, not raw row counts.
 
 ### 5. Backfills break baselines
 
-Statistical/forecast-based completeness checks anchor on history. A backfill that reprocesses 90 days dumps an enormous volume into "today's" partition by ingestion time, and your anomaly band screams. The fix is to key completeness baselines on the **business event date**, not the physical load date, and to suppress volume-anomaly checks (not correctness checks) during declared backfill windows.
+Statistical or forecast-based completeness checks anchor on history. A backfill (reprocessing historical data) that reprocesses 90 days dumps an enormous volume into "today's" partition by ingestion time, and your anomaly band screams. The fix is to key completeness baselines on the **business event date** (when the event actually happened), not the physical load date (when your pipeline wrote it), and to suppress volume-anomaly checks (not correctness checks) during declared backfill windows.
 
 ### 6. Schema evolution silently drops attribute completeness
 
-When a column is added upstream, every historical row is NULL for it. When a column is renamed and the old reader keeps the old name, the new column is 100% NULL going forward. Both look like attribute-completeness regressions. Tie your column-completeness expectations to a schema contract with an effective date, so "this column is required starting 2026-03-01" doesn't fire for partitions before that date. (See [event-design](../../kafka/event-design/) for contract evolution.)
+When a column is added upstream, every historical row is NULL for it. When a column is renamed and the old reader keeps the old name, the new column is 100% NULL going forward. Both look like attribute-completeness regressions. Tie your column-completeness expectations to a schema contract with an effective date, so "this column is required starting 2026-03-01" doesn't fire for partitions before that date.
 
 ## Worked example
 
@@ -185,9 +185,9 @@ def check_attribute_completeness(df: DataFrame, biz_date: date):
     return results
 ```
 
-Run it from the orchestration layer as a blocking task. In Airflow this is just a `PythonOperator` whose raised exception fails the DAG and halts the downstream `publish_gold` task — completeness becomes a promotion gate, not a postmortem artifact.
+Run it from the orchestration layer as a blocking task. In Airflow (a workflow orchestration tool) this is just a `PythonOperator` whose raised exception fails the DAG (directed acyclic graph — the pipeline definition) and halts the downstream `publish_gold` task — completeness becomes a promotion gate, not a postmortem artifact.
 
-If you prefer declarative assertions, the same logic in **Great Expectations** / **Soda** expresses row completeness as a freshness-of-volume expectation and attribute completeness as `expect_column_values_to_not_be_null` scoped by a `row_condition`:
+If you prefer declarative assertions (expressing what you want to be true rather than writing the check logic yourself), the same logic in **Great Expectations** or **Soda** expresses row completeness as a freshness-of-volume expectation and attribute completeness as `expect_column_values_to_not_be_null` scoped by a `row_condition`:
 
 ```yaml
 # soda check (illustrative)
@@ -205,11 +205,11 @@ checks for silver_orders:
 
 ## Production patterns
 
-- **Control-file handshake at ingestion.** Have upstream emit a manifest per batch: `{batch_id, row_count, min_event_ts, max_event_ts, sha256}`. Refuse to mark a partition complete until observed distinct keys reconcile with the manifest count. This single pattern eliminates the largest class of silent loss.
-- **Completeness as an Iceberg/Delta partition property.** After validation, write a partition-level metadata flag (`completeness_status=sealed`, `expected=…`, `observed=…`) so downstream readers can filter to sealed partitions only and never read a half-loaded hour. Pairs naturally with snapshot isolation (see [iceberg](../../lakehouse/iceberg/) and [delta](../../lakehouse/delta/)).
+- **Control-file handshake at ingestion.** Have upstream emit a manifest (a metadata file) per batch: `{batch_id, row_count, min_event_ts, max_event_ts, sha256}`. Refuse to mark a partition complete until observed distinct keys reconcile with the manifest count. This single pattern eliminates the largest class of silent loss.
+- **Completeness as an Iceberg/Delta partition property.** After validation, write a partition-level metadata flag (`completeness_status=sealed`, `expected=…`, `observed=…`) so downstream readers can filter to sealed partitions only and never read a half-loaded hour. Iceberg and Delta Lake are open table formats that support this kind of partition-level metadata and snapshot isolation (reading a consistent version of the data even while writes are happening).
 - **Two-tier verdict for streaming.** Emit `completeness_so_far` continuously and a final `sealed` verdict once the watermark passes `window_end + allowed_lateness`. Alert only on sealed-state shortfalls.
 - **Per-segment baselines, not global.** Track expected volume per `(source_system, region, event_hour)` and alert when a segment that historically had data goes to zero. A "missing segment" detector catches feed outages that global counts mask.
-- **Cast-failure counters.** Every `try_cast` / lenient parse that can null a value increments a named metric. A spike in cast-failure nulls is a schema-drift early warning, distinct from row loss.
+- **Cast-failure counters.** Every `try_cast` or lenient parse that can null a value increments a named metric. A spike in cast-failure nulls is a schema-drift early warning, distinct from row loss.
 - **Backfill-aware suppression.** Key baselines on business event date; tag declared backfills so volume-anomaly checks suppress while correctness checks (key uniqueness, attribute population) keep running.
 
 ## Anti-patterns & failure modes
@@ -233,11 +233,11 @@ checks for silver_orders:
 | Source is a queryable OLTP, modest volume | Direct source `COUNT(*)` per window |
 | High-cardinality, seasonal volume, no control source | Statistical forecast band (e.g. STL/Prophet) for anomaly detection only |
 | Streaming with late data | Watermark-sealed two-tier verdict |
-| You need cross-system row-for-row agreement, not just counts | Escalate to full [reconciliation](../reconciliation/) |
-| You care whether values are *right*, not just present | That's [accuracy](../accuracy/), not completeness — different check |
-| You care whether data arrived *on time* | That's [freshness](../freshness/) — completeness can be 100% and stale |
+| You need cross-system row-for-row agreement, not just counts | Escalate to full reconciliation |
+| You care whether values are *right*, not just present | That's accuracy, not completeness — different check |
+| You care whether data arrived *on time* | That's freshness — completeness can be 100% and stale |
 
-Completeness, accuracy, and freshness are orthogonal and all three can fail independently. A partition can be 100% complete, perfectly fresh, and entirely wrong (every `amount` off by a currency-conversion bug). Don't let one green check imply the others.
+Completeness, accuracy, and freshness are orthogonal (independent — each can fail without the others failing) and all three can fail independently. A partition can be 100% complete, perfectly fresh, and entirely wrong (every `amount` off by a currency-conversion bug). Don't let one green check imply the others.
 
 ## Interview & architecture-review talking points
 
@@ -250,11 +250,10 @@ Completeness, accuracy, and freshness are orthogonal and all three can fail inde
 
 ## Further reading
 
-- [reconciliation](../reconciliation/) — cross-system count and row-level agreement; the heavier hammer when counts alone aren't enough.
-- [accuracy](../accuracy/) — values being correct, not merely present.
-- [freshness](../freshness/) — on-time arrival; orthogonal to completeness.
-- [kafka/exactly-once](../../kafka/exactly-once/) and [kafka/offsets](../../kafka/offsets/) — why raw counts lie under at-least-once delivery.
-- [lakehouse/iceberg](../../lakehouse/iceberg/) and [lakehouse/delta](../../lakehouse/delta/) — snapshot isolation and partition metadata for sealing complete partitions.
-- [observability/monitoring](../../observability/monitoring/) — wiring segment-level completeness signals into alerting.
-- Internal ADRs in [`adr/`](../../adr/).
-- External: *Great Expectations* documentation on expectation suites; *Soda Core* checks reference. For the broader taxonomy, the DAMA-DMBOK data-quality dimensions chapter remains the canonical framing of completeness vs. the other dimensions.
+- reconciliation — cross-system count and row-level agreement; the heavier hammer when counts alone aren't enough.
+- accuracy — values being correct, not merely present.
+- freshness — on-time arrival; orthogonal to completeness.
+- kafka/exactly-once and kafka/offsets — why raw counts lie under at-least-once delivery.
+- lakehouse/iceberg and lakehouse/delta — snapshot isolation and partition metadata for sealing complete partitions.
+- observability/monitoring — wiring segment-level completeness signals into alerting.
+- Internal ADRs in `adr/`.

@@ -4,14 +4,14 @@
 
 ## About This Chapter
 
-**What this is.** A consistency model is the precise contract about which values a read may return given the writes that have happened. This chapter walks the lattice from linearizable down to eventual, the quorum math behind read freshness, and the seams where strong and weak guarantees meet and cause real incidents.
+**What this is.** A consistency model is the contract a storage system makes with its clients about which values a read is allowed to return, given the writes that have already happened. This chapter walks through the spectrum from the strongest guarantee (linearizability) down to the weakest (eventual consistency), covers the math behind read freshness using quorums (groups of replicas that must agree), and explains the boundaries where strong and weak guarantees meet — because those boundaries are where real production incidents happen.
 
-**Who it's for.** Data engineers, analytics engineers, platform/architecture leads, and engineers preparing for senior/staff data-engineering interviews.
+**Who it's for.** Mid-level data engineers, analytics engineers, platform and architecture leads, and engineers preparing for senior or staff data-engineering interviews.
 
 **What you'll take away.** By the end you'll be able to:
-- Place linearizable, sequential, causal, session (read-your-writes/monotonic), and eventual consistency on a lattice and pick the weakest model that keeps a feature correct.
-- Fix the common "my write disappeared" bug with read-your-writes via writer-pinning or an LSN/version token.
-- Explain why the lakehouse runs on snapshot isolation (not serializability), and why a MERGE needs the dedup key in its `ON` clause to avoid write skew.
+- Place linearizable, sequential, causal, session (read-your-writes/monotonic), and eventual consistency on a spectrum from strongest to weakest, and pick the weakest model that still keeps a feature correct.
+- Fix the common "my write disappeared" bug using read-your-writes via writer-pinning (always routing a user's reads to the same database instance that accepted their write) or an LSN/version token (a position marker in the database's write log).
+- Explain why the lakehouse (a data platform combining data lake storage with warehouse-style queries) runs on snapshot isolation (not the stronger serializability guarantee), and why a MERGE needs the dedup key in its `ON` clause to avoid write skew (a bug where two concurrent transactions each read data, make disjoint changes, and both commit — violating an invariant neither one alone would have broken).
 
 ---
 
@@ -19,11 +19,11 @@ A "consistency model" is the contract between a storage system and its clients a
 
 ## TL;DR
 
-- A consistency model defines the set of *legal* read outcomes for a given history of operations. Linearizability, sequential, causal, read-your-writes, monotonic reads, and eventual form a lattice from strongest to weakest — and weaker is not "worse," it is cheaper and more available.
-- The cost of strength is latency and availability under partition (see [cap-theorem](../cap-theorem/README.md)). Linearizable reads require a quorum round-trip or a leader lease; eventual reads can be served from any replica with no coordination.
+- A consistency model defines the set of *legal* read outcomes for a given history of operations. Linearizability, sequential, causal, read-your-writes, monotonic reads, and eventual form a spectrum from strongest to weakest — and weaker is not "worse," it is cheaper and more available.
+- The cost of stronger consistency is higher latency and reduced availability when a network partition (a network failure where some nodes can't communicate) occurs. Linearizable reads require a quorum round-trip or a leader lease (a time-limited permission granted to one node to serve reads without checking others); eventual reads can be served from any replica with no coordination.
 - Most production data platforms run a *mix*: a linearizable system of record (the Iceberg/Delta catalog, a Postgres ledger), causal or read-your-writes guarantees at the API edge, and eventual consistency in caches and analytics replicas.
 - The bugs come from the *seams*. A write goes to a strongly consistent store, then a downstream cache or read replica serves a stale value, and the user sees their own write disappear. The fix is almost never "make everything strong"; it is to pin the read path that needs the guarantee.
-- In the lakehouse, "consistency" maps to *snapshot isolation* over a table. Iceberg and Delta give you atomic snapshot reads via an optimistic-concurrency commit on the catalog pointer — that is the consistency model you actually depend on every day.
+- In the lakehouse, "consistency" maps to *snapshot isolation* over a table. Iceberg and Delta give you atomic snapshot reads via an optimistic-concurrency commit (a commit strategy where you check for conflicts at commit time rather than locking upfront) on the catalog pointer — that is the consistency model you actually depend on every day.
 - You must name the guarantee explicitly per data flow. "Eventually consistent" without a bounded staleness number is not a spec; it is a hope.
 
 ## Why this matters in production
@@ -36,18 +36,18 @@ The same class of bug shows up everywhere in a data platform:
 
 - A Spark job reads an Iceberg table mid-compaction and double-counts rows because it assumed file-listing consistency the object store doesn't give it (it does, via the manifest — but only if you read through the catalog, not by globbing S3 paths).
 - A Kafka consumer commits offsets before the sink write is durable, so on rebalance it skips records — an availability-favoring choice masquerading as exactly-once.
-- A materialized aggregate in Redshift disagrees with the ledger because it was built from an eventually-consistent CDC stream that reordered two updates to the same key.
+- A materialized aggregate in Redshift disagrees with the ledger because it was built from an eventually-consistent CDC (Change Data Capture — a pattern that streams database changes as events) stream that reordered two updates to the same key.
 
 Picking and *naming* the consistency model per flow is the difference between a system whose anomalies you can reason about and one where every incident is a fresh mystery.
 
 ## How it works
 
-Consistency models are defined over *histories*: the partially ordered set of read and write operations as observed by clients. A model is a rule that says which histories are legal. Two axes matter most:
+Consistency models are defined over *histories*: the partially ordered set of read and write operations as observed by clients. Think of a history as a timestamped log of every read and write that happened, as seen from each client's perspective. A model is a rule that says which histories are legal. Two axes matter most:
 
 1. **Recency** — how fresh must a read be relative to the latest write?
 2. **Ordering** — must all clients agree on the order operations happened?
 
-The classic hierarchy (Viotti & Vukolić survey it formally; the lattice below is the practical subset):
+The classic hierarchy (the lattice below is the practical subset used in data engineering):
 
 ```mermaid
 graph TD
@@ -65,19 +65,23 @@ graph TD
 
 Reading top to bottom: each model permits *more* legal histories (more possible read outcomes), costs less coordination, and survives more failure scenarios.
 
-**Linearizability** is the gold standard. Every operation appears to take effect atomically at some single point between its invocation and its response, and that point respects real-time order: if write W completes before read R *starts* (wall-clock), R must see W or something later. This is what makes a register behave like a single-threaded variable. It is *composable* — a system built from linearizable parts is linearizable — which is why it is the model you want for a lock, a leader-election register, or a ledger balance.
+**Linearizability** is the gold standard. Every operation appears to take effect atomically at some single point between its invocation and its response, and that point respects real-time order: if write W completes before read R *starts* (wall-clock), R must see W or something later. This is what makes a register (a single storage cell) behave like a single-threaded variable. It is *composable* — a system built from linearizable parts is linearizable — which is why it is the model you want for a lock, a leader-election register, or a ledger balance.
 
 **Sequential consistency** drops the real-time requirement. All clients agree on *an* order, and each client's own operations appear in program order, but that order need not match wall clock. Two clients can both be "behind" as long as they agree.
 
-**Causal consistency** only orders operations that are causally related (Lamport's happens-before): if you read a value then write based on it, everyone sees your read-before-write order. Concurrent, unrelated writes can be seen in different orders by different clients. This is the strongest model achievable while remaining *available* under network partition (Mahajan et al.; it is the practical ceiling for an AP system).
+**Causal consistency** only orders operations that are causally related (if you read a value then write based on it, that is a causal link): if you read a value then write based on it, everyone sees your read-before-write order. Concurrent, unrelated writes can be seen in different orders by different clients. This is the strongest model achievable while remaining *available* under network partition — it is the practical ceiling for a system that prioritizes availability.
 
 **Read-your-writes, monotonic reads, monotonic writes** are *session* (client-centric) guarantees — they constrain what a single client observes, not what all clients agree on. They are cheap, they fix the majority of user-facing "my data vanished" bugs, and they are usually the right target for an API tier.
+
+- **Read-your-writes**: after you write something, your subsequent reads will always see that write (or something newer).
+- **Monotonic reads**: once you've seen a value, you'll never see an older value in a future read.
+- **Monotonic writes**: your own writes are applied in the order you issued them.
 
 **Eventual consistency** promises only that *if writes stop, all replicas converge to the same value.* It says nothing about ordering, recency, or what you read in the meantime.
 
 ### The quorum math that makes a read fresh
 
-For a Dynamo-style replicated store with N replicas, write quorum W, read quorum R, a read is guaranteed to see the latest acknowledged write iff:
+For a Dynamo-style replicated store (a key-value store that replicates data across multiple nodes) with N replicas, write quorum W (minimum number of replicas that must confirm a write), read quorum R (minimum number of replicas that must respond to a read), a read is guaranteed to see the latest acknowledged write if and only if:
 
 ```
 R + W > N
@@ -91,11 +95,11 @@ This is where engineers get burned.
 
 ### Eventual consistency has no bound unless you give it one
 
-"Eventually" is unbounded by definition. In practice you need a **bounded staleness** SLO: "replicas converge within p99 = 2 s." Without a number you cannot test, alert, or reason. For our CDC pipeline I instrument staleness as `read_timestamp - source_commit_timestamp` per key and alert when p99 exceeds the budget. If you can't measure replica lag, you are not running an eventually-consistent system — you are running a randomly-consistent one.
+"Eventually" is unbounded by definition. In practice you need a **bounded staleness** SLO (Service Level Objective — a measurable target you commit to): "replicas converge within p99 = 2 s." Without a number you cannot test, alert, or reason. For our CDC pipeline I instrument staleness as `read_timestamp - source_commit_timestamp` per key and alert when p99 exceeds the budget. If you can't measure replica lag, you are not running an eventually-consistent system — you are running a randomly-consistent one.
 
 ### Session guarantees are sticky-routing, not magic
 
-Read-your-writes is usually implemented by *sticking* a client's reads to the replica (or primary) that absorbed its writes, or by passing a version token (a write timestamp / LSN) the client must read at-or-after. The Aurora bug above is fixed by either:
+Read-your-writes is usually implemented by *sticking* a client's reads to the replica (or primary) that absorbed its writes, or by passing a version token (a write timestamp or LSN — Log Sequence Number, a position in the database's write-ahead log) the client must read at-or-after. The Aurora bug above is fixed by either:
 
 - routing the post-write read to the writer endpoint, **or**
 - capturing the commit LSN on write and rejecting/retrying replica reads whose `aurora_replica_lag` puts them behind that LSN.
@@ -113,11 +117,11 @@ There is no free lunch: you either accept a staleness window or you put the cach
 
 ### Causal consistency and the "concurrent writes" reordering trap
 
-Causal preserves *cause→effect* but lets concurrent writes land in any order per replica. If two services both update the same key without a causal link, last-writer-wins (by physical timestamp) silently drops one update — and physical timestamps drift across machines. CRDTs or vector clocks resolve this deterministically; a bare LWW does not. In Kafka, this is why **keying by entity id** matters: all writes for one key go to one partition and are totally ordered, converting a potential reordering problem into a single ordered log.
+Causal consistency preserves *cause→effect* but lets concurrent writes land in any order per replica. If two services both update the same key without a causal link, last-writer-wins (LWW — a conflict resolution strategy that keeps whichever write has the latest timestamp) silently drops one update — and physical timestamps drift across machines. CRDTs (Conflict-free Replicated Data Types — data structures designed to merge concurrent updates deterministically) or vector clocks (logical clocks that track causal relationships between events across nodes) resolve this deterministically; a bare LWW does not. In Kafka, this is why **keying by entity id** matters: all writes for one key go to one partition and are totally ordered, converting a potential reordering problem into a single ordered log.
 
 ### Snapshot isolation is the lakehouse consistency model — and it is *not* serializable
 
-This is the one most data engineers actually depend on daily and least precisely understand. Iceberg and Delta give **snapshot isolation (SI)**: every read sees a consistent point-in-time snapshot of the table (the manifest list referenced by the current metadata pointer), and a writer commits atomically by compare-and-swapping the catalog pointer from snapshot `N` to `N+1`.
+This is the one most data engineers actually depend on daily and least precisely understand. Snapshot isolation (SI) means every read sees a consistent point-in-time snapshot of the table — like a photograph taken at a specific moment. Iceberg and Delta implement this by having each reader see the manifest list (the index of files that make up the table) referenced by the current metadata pointer, and a writer commits atomically by compare-and-swapping (CAS — atomically checking that a value is what you expect, then updating it in a single operation) the catalog pointer from snapshot `N` to `N+1`.
 
 ```mermaid
 sequenceDiagram
@@ -133,11 +137,11 @@ sequenceDiagram
     W2->>W2: re-read base=8, re-validate, retry CAS 7->... 8 -> 9
 ```
 
-SI prevents dirty reads and gives atomic multi-file commits, but it permits **write skew**: two transactions read an overlapping set, make disjoint writes based on what they read, and both commit — violating an invariant neither alone would. Iceberg's `validate-from-snapshot` and `SnapshotUpdate` conflict checks (and `commit.retry.num-retries`) catch *file-level* conflicts (two MERGEs touching the same data files), but the engine cannot catch a *logical* invariant you never told it about. If your MERGE depends on "this key does not already exist," two concurrent inserts can both pass and you get duplicates. The fix is either a serializable isolation mode where supported, or a deduplication/upsert key enforced in the MERGE condition itself.
+SI prevents dirty reads (reading data from an uncommitted transaction) and gives atomic multi-file commits, but it permits **write skew**: two transactions read an overlapping set, make disjoint writes based on what they read, and both commit — violating an invariant neither alone would. Iceberg's `validate-from-snapshot` and `SnapshotUpdate` conflict checks (and `commit.retry.num-retries`) catch *file-level* conflicts (two MERGEs touching the same data files), but the engine cannot catch a *logical* invariant you never told it about. If your MERGE depends on "this key does not already exist," two concurrent inserts can both pass and you get duplicates. The fix is either a serializable isolation mode where supported (serializable goes further than SI by ensuring transactions behave as if they ran one at a time), or a deduplication/upsert key enforced in the MERGE condition itself.
 
 ### Read-listing consistency on object stores
 
-S3 has been strongly read-after-write consistent for new objects since Dec 2020, but **LIST** can still lag in some stores and historically caused Spark to miss files. This is precisely why Iceberg/Delta exist: they never trust a directory listing. The set of files in a snapshot is the manifest, which is itself an immutable object read at a known path. If you `spark.read.parquet("s3://.../table/")` and glob the directory, you have thrown away the table format's consistency guarantee and reintroduced the listing problem. Always read through the catalog.
+S3 has been strongly read-after-write consistent for new objects since Dec 2020, but **LIST** operations (listing the files in a directory) can still lag in some stores and historically caused Spark to miss files. This is precisely why Iceberg/Delta exist: they never trust a directory listing. The set of files in a snapshot is the manifest, which is itself an immutable object read at a known path. If you `spark.read.parquet("s3://.../table/")` and glob the directory, you have thrown away the table format's consistency guarantee and reintroduced the listing problem. Always read through the catalog.
 
 ## Worked example
 
@@ -218,7 +222,7 @@ If you instead did `spark.read.parquet("s3://lake/warehouse/billing/invoices/dat
 - **Key by entity to convert ordering problems into a single ordered log.** In Kafka, same key → same partition → total order. In Iceberg MERGE, the dedup key in the `ON` clause converts a write-skew hazard into a CAS retry.
 - **Make eventual consistency observable.** Emit replica/CDC lag as a first-class metric (`source_commit_ts → visible_ts`) and SLO-alert on it. Staleness you can't see is staleness you'll debug at 2 a.m.
 - **Use snapshot ids / version tokens as cross-system join keys.** When a Spark job and a downstream consumer must agree on "which version of the table," pass the Iceberg `snapshot-id` rather than a wall-clock time. It is the only unambiguous reference.
-- **Idempotency over exactly-once.** Rather than chasing exactly-once across a weakly consistent boundary, make the sink idempotent (upsert on a natural key, dedup table) so at-least-once delivery is safe. This is almost always cheaper and more robust than two-phase commit.
+- **Idempotency over exactly-once.** Rather than chasing exactly-once across a weakly consistent boundary, make the sink idempotent (upsert on a natural key, dedup table) so at-least-once delivery is safe. This is almost always cheaper and more robust than two-phase commit (a protocol that coordinates a commit across multiple systems simultaneously).
 
 ## Anti-patterns & failure modes
 
@@ -239,12 +243,12 @@ The common thread: every one of these is a *seam* where a strong guarantee on on
 
 | You need… | Use this model | Where it lives in our stack |
 |---|---|---|
-| A correct balance, lock, leader, or uniqueness check | Linearizable | Postgres/Aurora primary, DynamoDB strongly-consistent read, ZK/etcd register (see [consensus](../consensus/README.md)) |
+| A correct balance, lock, leader, or uniqueness check | Linearizable | Postgres/Aurora primary, DynamoDB strongly-consistent read, ZK/etcd register |
 | A user to always see their own latest change | Read-your-writes (session) | API tier with version-token routing |
 | Multi-step user flows to stay causally ordered | Causal | Per-entity Kafka partitioning; client session affinity |
 | Atomic point-in-time reads over a big table | Snapshot isolation | Iceberg / Delta via the catalog |
 | Cheap, highly-available analytics reads tolerant of staleness | Eventual + bounded staleness | Read replicas, Redshift/Snowflake from CDC, caches |
-| To survive network partitions without blocking writes | Causal or eventual (AP) | See the AP/CP tradeoff in [cap-theorem](../cap-theorem/README.md) |
+| To survive network partitions without blocking writes | Causal or eventual (AP) | See the AP/CP tradeoff in the cap-theorem chapter |
 
 Rule of thumb: start from the *weakest model that still makes the feature correct*, because weaker is cheaper and more available. Then strengthen only the specific read paths that need it. Strengthening everything to linearizable "to be safe" is how you get a system that is slow, expensive, and *still* wrong at the cache seam.
 
@@ -259,10 +263,8 @@ Rule of thumb: start from the *weakest model that still makes the feature correc
 
 ## Further reading
 
-- [cap-theorem](../cap-theorem/README.md) — the availability/consistency tradeoff under partition that bounds which models you can even offer.
-- [consensus](../consensus/README.md) — how Raft/Paxos and quorums *implement* linearizability for the system of record.
-- [event-driven-systems](../event-driven-systems/README.md) — ordering, keying, and idempotency in log-based pipelines.
-- [../../lakehouse/iceberg/README.md](../../lakehouse/iceberg/README.md) — snapshot isolation and optimistic-concurrency commits in practice.
-- [../../kafka/offsets/README.md](../../kafka/offsets/README.md) — offset-commit ordering and the at-least-once vs exactly-once tradeoff.
-- Viotti & Vukolić, *Consistency in Non-Transactional Distributed Storage Systems* (ACM Computing Surveys, 2016) — the formal lattice of the models named above.
-- Herlihy & Wing, *Linearizability: A Correctness Condition for Concurrent Objects* (TOPLAS, 1990) — the original definition of the strongest model.
+- cap-theorem chapter — the availability/consistency tradeoff under partition that bounds which models you can even offer.
+- consensus chapter — how Raft/Paxos and quorums *implement* linearizability for the system of record.
+- event-driven-systems chapter — ordering, keying, and idempotency in log-based pipelines.
+- lakehouse/iceberg chapter — snapshot isolation and optimistic-concurrency commits in practice.
+- kafka/offsets chapter — offset-commit ordering and the at-least-once vs exactly-once tradeoff.

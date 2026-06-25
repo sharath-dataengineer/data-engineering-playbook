@@ -6,12 +6,12 @@
 
 **What this is.** Freshness is the lag between now and the moment a table last became true. This chapter covers measuring that lag honestly against the right clock, alerting before consumers notice, and not being fooled by backfills or dark slices.
 
-**Who it's for.** data engineers, analytics engineers, data/ML engineers, platform/architecture leads, and engineers preparing for senior/staff data-engineering interviews.
+**Who it's for.** Mid-level data engineers, analytics engineers, data/ML engineers, platform/architecture leads, and engineers preparing for senior/staff data-engineering interviews.
 
 **What you'll take away.** By the end you'll be able to:
 - Distinguish event, ingest, and commit time, and measure freshness as a lag on the read path using Iceberg/Delta metadata instead of full-table scans.
 - Catch partial ("dark slice") staleness with dimensioned freshness plus zero-row checks, and separate "data arriving late" from "old data being rewritten."
-- Set per-consumer-tier SLOs (soft percentile + hard ceiling) and run an independent freshness sentinel that survives a wedged producing DAG.
+- Set per-consumer-tier SLOs (Service Level Objectives — agreements on how fresh data must be) and run an independent freshness sentinel that survives a wedged (stuck or stalled) producing DAG (directed acyclic graph, the workflow that loads the table).
 
 ---
 
@@ -22,8 +22,8 @@ Freshness is the answer to one question a consumer actually asks: *"As of what w
 - Freshness is a **lag**, not a timestamp. Always express it as `now() − T`, where `T` is a clock you have explicitly chosen (event time, ingest time, or commit time). Most freshness bugs are really *clock confusion* bugs.
 - The single most dangerous freshness failure is **silent staleness**: the pipeline is green, the table is queryable, the last partition is from 9 hours ago, and nobody is paged. A row-count check will not catch this. You need a max-timestamp check.
 - Set freshness SLOs **per consumer tier**, not per table. A gold dashboard that the CFO opens at 8am and an ML feature table read at inference time have different deadlines and different escalation paths.
-- Measure freshness on the **read path**, from the catalog/table the consumer actually queries — not on the write path from your job's success log. A job that finishes at 02:00 but whose Iceberg snapshot isn't committed until 02:40 is 40 minutes stale by the only clock that matters.
-- Watermarks, late data, and freshness are the same problem viewed from different angles. If you allow 6 hours of lateness for correctness, your freshness floor is 6 hours — you cannot SLO your way under your own watermark.
+- Measure freshness on the **read path**, from the catalog/table the consumer actually queries — not on the write path from your job's success log. A job that finishes at 02:00 but whose Iceberg snapshot (a point-in-time record of a table's state) isn't committed until 02:40 is 40 minutes stale by the only clock that matters.
+- Watermarks (a setting in streaming jobs that controls how long the engine waits for late-arriving data before closing a time window), late data, and freshness are the same problem viewed from different angles. If you allow 6 hours of lateness for correctness, your freshness floor is 6 hours — you cannot SLO your way under your own watermark.
 - Backfills and replays are the most common cause of false freshness alerts and of *real* freshness regressions. Freshness logic must distinguish "new data arriving late" from "old data being rewritten."
 
 ## Why this matters in production
@@ -32,7 +32,7 @@ The failure I have cleaned up the most times looks identical every time. A marke
 
 The upstream Kafka topic stopped emitting a particular event type because a mobile client shipped a bad release. The Spark Structured Streaming job kept running — it had data, just not *that* data. The Iceberg table kept getting new snapshots (other event types still flowed). Row counts went *up*. Null rates were fine. Every classic data-quality check passed. The table was simply stale for one slice, and nothing measured "what is the newest event for `event_type = 'conversion'`."
 
-Freshness is the dimension that catches "the pipeline is healthy but reality moved on." It is orthogonal to [completeness](../completeness/README.md) (did we get all the rows we expected?) and [accuracy](../accuracy/README.md) (are the values right?). You can be 100% complete and 100% accurate *as of two days ago* and still be useless. The cost of getting this wrong is rarely a crash — it's a decision made on stale data, which is far harder to detect after the fact.
+Freshness is the dimension that catches "the pipeline is healthy but reality moved on." It is orthogonal to (independent from) completeness (did we get all the rows we expected?) and accuracy (are the values right?). You can be 100% complete and 100% accurate *as of two days ago* and still be useless. The cost of getting this wrong is rarely a crash — it's a decision made on stale data, which is far harder to detect after the fact.
 
 ## How it works
 
@@ -77,7 +77,7 @@ The hard parts are (1) choosing the right `event_timestamp_column`, (2) measurin
 
 ### The watermark is your freshness floor
 
-If your streaming job uses a watermark of 6 hours to handle late-arriving events, you are *telling the engine* "do not finalize a window until 6 hours after its event time." That is a correctness decision, and it puts a hard floor under freshness. No SLO, no faster cluster, no autoscaling will make a 6-hour-watermarked aggregate fresher than ~6 hours for its final, correct value.
+A watermark is a setting in streaming jobs (like Spark Structured Streaming) that tells the engine how long to wait for late-arriving events before it finalizes a time window. If your streaming job uses a watermark of 6 hours, you are *telling the engine* "do not finalize a window until 6 hours after its event time." That is a correctness decision, and it puts a hard floor under freshness. No SLO, no faster cluster, no autoscaling will make a 6-hour-watermarked aggregate fresher than ~6 hours for its final, correct value.
 
 ```python
 # Structured Streaming: watermark = correctness deadline = freshness floor
@@ -86,11 +86,11 @@ events.withWatermark("event_time", "6 hours") \
       .agg(count("*").alias("conversions"))
 ```
 
-The principal-level move is to **expose both a provisional and a finalized freshness**. Emit the windowed result early (provisional, low lag, may revise) and again at watermark close (finalized, high lag, stable). Consumers that need recency read provisional; consumers that need correctness read finalized. Trying to serve both from one number is how you end up with a dashboard that "flickers" as late data lands and an analyst who stops trusting it. This is the same late-data tradeoff covered in [event-driven systems](../../distributed-systems/event-driven-systems/README.md) and Kafka [offsets](../../kafka/offsets/README.md).
+The principal-level move is to **expose both a provisional and a finalized freshness**. Emit the windowed result early (provisional, low lag, may revise) and again at watermark close (finalized, high lag, stable). Consumers that need recency read provisional; consumers that need correctness read finalized. Trying to serve both from one number is how you end up with a dashboard that "flickers" as late data lands and an analyst who stops trusting it.
 
 ### Max-timestamp is not enough by itself
 
-`MAX(event_time)` answers "how recent is the newest row" but is blind to **partial staleness**. The attribution incident above is exactly this: `MAX(event_time)` across all event types was fresh, but `MAX(event_time) WHERE event_type='conversion'` was 36 hours stale. A single global freshness metric on a multi-tenant or multi-event table hides per-slice staleness.
+`MAX(event_time)` answers "how recent is the newest row" but is blind to **partial staleness** — the situation where a subset of your data (one event type, one region) has gone stale while the rest looks fine. The attribution incident above is exactly this: `MAX(event_time)` across all event types was fresh, but `MAX(event_time) WHERE event_type='conversion'` was 36 hours stale. A single global freshness metric on a multi-tenant or multi-event table hides per-slice staleness.
 
 The fix is dimensioned freshness — compute the lag per the dimensions that matter to consumers:
 
@@ -106,11 +106,11 @@ GROUP BY event_type, region
 HAVING lag_minutes > 120;                              -- alert rows only
 ```
 
-The cardinality of your freshness GROUP BY is a design decision. Too coarse and you miss partial staleness; too fine and you generate thousands of noisy per-key alerts. I default to grouping by the dimension that maps to an *owner who can act* (the team that produces `event_type`), not every dimension that exists.
+The cardinality (number of unique values) of your freshness GROUP BY is a design decision. Too coarse and you miss partial staleness; too fine and you generate thousands of noisy per-key alerts. I default to grouping by the dimension that maps to an *owner who can act* (the team that produces `event_type`), not every dimension that exists.
 
 ### Measure on the read path, cheaply, via table metadata
 
-A common mistake is treating job success as freshness. The job's `_SUCCESS` file or Airflow task state tells you the *write* finished. It does not tell you the data is *visible* — there may be a catalog commit, a MSCK/partition registration, a view refresh, or a downstream materialization between write and read.
+A common mistake is treating job success as freshness. The job's `_SUCCESS` file or Airflow task state tells you the *write* finished. It does not tell you the data is *visible* — there may be a catalog commit, a MSCK/partition registration (a repair step that makes new partitions queryable), a view refresh, or a downstream materialization between write and read.
 
 Measure freshness by querying the consumer's table. With Iceberg you don't need a full scan — the snapshot carries commit time and column bounds:
 
@@ -148,14 +148,14 @@ The cleanest implementation: track freshness *per partition you expect to be act
 
 ### Freshness SLO math
 
-Define the SLO as a percentile over a window, not a single bad reading, or transient blips page you:
+Define the SLO as a percentile (a statistical threshold — p95 means 95% of readings must meet the target) over a window, not a single bad reading, or transient blips page you:
 
 ```
 freshness_slo = "p95 of commit_lag over a rolling 7-day window ≤ 90 minutes,
                  AND no single reading > 180 minutes"
 ```
 
-Two thresholds: a **soft** percentile (warning, ticket) and a **hard** ceiling (page). This mirrors how you'd run an availability SLO with an error budget. The hard ceiling protects against the one catastrophic stall; the percentile protects against slow erosion you'd otherwise normalize.
+Two thresholds: a **soft** percentile (warning, ticket) and a **hard** ceiling (page). This mirrors how you'd run an availability SLO with an error budget (the allowed amount of failure before you breach the SLO). The hard ceiling protects against the one catastrophic stall; the percentile protects against slow erosion you'd otherwise normalize.
 
 ## Worked example
 
@@ -230,13 +230,13 @@ if __name__ == "__main__":
     print(f"{TABLE} fresh @ {datetime.now(timezone.utc).isoformat()}")
 ```
 
-Two design choices worth calling out. First, the **dark-slice check** (`expected - seen`) is what would have caught the attribution incident — a `MAX()` check alone cannot detect "this event type produced zero rows," because there is no row to compute a `MAX` over. Second, the monitor is a **separate scheduled job**, not a downstream task in the producing DAG. If the producing DAG is wedged, a self-hosted check goes down with it; an independent sentinel still fires.
+Two design choices worth calling out. First, the **dark-slice check** (`expected - seen`) is what would have caught the attribution incident — a `MAX()` check alone cannot detect "this event type produced zero rows," because there is no row to compute a `MAX` over. Second, the monitor is a **separate scheduled job**, not a downstream task in the producing DAG. If the producing DAG is wedged (stuck), a self-hosted check goes down with it; an independent sentinel still fires.
 
 ## Production patterns
 
 - **Publish freshness as a table, not just an alert.** Write `{table, dimension, commit_lag, event_lag, checked_at}` to a `quality.freshness_log` table. Consumers can then `JOIN` against it or gate their own reads ("don't refresh the model if the feature table lag > 30m"). Freshness becomes a first-class, queryable signal instead of a Slack message that scrolls away.
 - **Heartbeat / canary records.** For low-volume tables where "no new rows" is ambiguous (is it broken or just quiet?), have the producer emit a synthetic heartbeat event every N minutes. Freshness on the heartbeat is unambiguous: if it stops, the pipe is down, regardless of business volume.
-- **Freshness budget passed downstream.** If gold has a 90-minute SLO and it's built from silver (30m) on bronze (10m), allocate the budget explicitly: bronze ≤10m, silver-build ≤20m, gold-build ≤30m, leaving slack. Track each hop so when gold blows its SLO you immediately know which layer ate the budget. This is freshness as an end-to-end SLO decomposed across [observability/monitoring](../../observability/monitoring/README.md) boundaries.
+- **Freshness budget passed downstream.** If gold has a 90-minute SLO and it's built from silver (30m) on bronze (10m), allocate the budget explicitly: bronze ≤10m, silver-build ≤20m, gold-build ≤30m, leaving slack. Track each hop so when gold blows its SLO you immediately know which layer ate the budget. This is freshness as an end-to-end SLO decomposed across observability and monitoring boundaries.
 - **Tier the alert, not just the threshold.** A `feature` table breach pages the on-call immediately; a `gold` dashboard breach at 2am files a ticket and pages only if still breached at 6am before the business reads it. Align escalation with when staleness actually causes harm.
 - **Stamp commit time into the data.** Add an `_ingested_at` / `_committed_at` column at write time. It costs one column and makes every downstream freshness check and incident forensic trivial — you can answer "when did this row become visible?" without reconstructing it from logs.
 
@@ -284,4 +284,3 @@ The honest default: most batch tables need a once-per-expected-load freshness ch
 - [observability/monitoring](../../observability/monitoring/README.md) — SLOs, error budgets, and alert routing that freshness checks plug into.
 - [distributed-systems/event-driven-systems](../../distributed-systems/event-driven-systems/README.md) and [kafka/offsets](../../kafka/offsets/README.md) — watermarks, late data, and the event-vs-processing-time distinction at the source.
 - [lakehouse/iceberg](../../lakehouse/iceberg/README.md) — snapshot and manifest metadata that makes commit-time freshness checks free.
-- External: Tyler Akidau et al., *"The Dataflow Model"* (VLDB 2015) — the canonical treatment of event time, processing time, and watermarks. Apache Iceberg [metadata tables docs](https://iceberg.apache.org/docs/latest/spark-queries/#inspecting-tables) for `.snapshots` and `.files`.

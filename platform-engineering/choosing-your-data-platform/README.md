@@ -6,7 +6,7 @@
 
 **What this is.** A decision guide for picking the storage and compute foundation of a data platform — warehouse vs. lake, and which table format (Hive, Delta, Iceberg, Hudi) to build on. It walks the choices stage by stage as a company grows from gigabytes to petabytes.
 
-**Who it's for.** Data engineers, platform/architecture leads, engineering managers/tech leads, and engineers preparing for senior/staff data-engineering interviews.
+**Who it's for.** Mid-level data engineers, platform/architecture leads, engineering managers/tech leads, and engineers preparing for senior/staff data-engineering interviews.
 
 **What you'll take away.** By the end you'll be able to:
 - Use five upfront questions to decide between a managed warehouse and a data lake, and know when dbt fits (transformation only, never the platform itself).
@@ -86,7 +86,7 @@ A data warehouse is a **structured, SQL-queryable store** with schema enforcemen
 
 dbt (**data build tool**) is frequently misunderstood as a "data platform." It is not.
 
-**dbt is a transformation layer.** It takes SQL `SELECT` statements, compiles them into the right dialect for your target, runs them, and materializes the results as tables or views. It has no storage. It has no compute engine of its own.
+**dbt is a transformation layer.** It takes SQL `SELECT` statements, compiles them into the right dialect for your target system, runs them, and saves (materializes) the results as tables or views. It has no storage. It has no compute engine of its own.
 
 ```
 Without dbt:  raw data in warehouse → analyst writes ad-hoc SQL → inconsistent results
@@ -99,7 +99,7 @@ You need a warehouse (or lake) first. Then dbt models the data inside it. dbt wo
 
 ## Option B — Data Lake
 
-A data lake stores data in **open file formats (Parquet, ORC, Avro) on object storage (S3, GCS)**. Compute is separate and pluggable — Spark, Trino, Athena, Flink, Presto. You own the infrastructure but gain flexibility, scale, and dramatically lower storage costs.
+A data lake stores data in **open file formats (Parquet, ORC, Avro) on object storage (S3, GCS)**. Think of open file formats as standard containers any engine can read, rather than proprietary formats locked to one vendor. Compute is separate and pluggable — Spark, Trino, Athena, Flink, Presto. You own the infrastructure but gain flexibility, scale, and dramatically lower storage costs.
 
 ### Why lakes win at scale
 
@@ -141,7 +141,7 @@ Stage 3 (governed): Multi-engine catalog (Glue, Nessie) + Iceberg + dbt-spark + 
 
 ## Choosing a Table Format
 
-Once you've committed to a lake, the next decision is which table format to build on. This is a **high-cost-to-reverse decision** — migrating 50 TB from Delta to Iceberg mid-flight is painful. Choose deliberately.
+Once you've committed to a lake, the next decision is which table format to build on. A table format is the layer that sits on top of your raw files and gives you features like updates, deletes, and schema changes. This is a **high-cost-to-reverse decision** — migrating 50 TB from Delta to Iceberg mid-flight is painful. Choose deliberately.
 
 ### Decision flowchart
 
@@ -160,11 +160,11 @@ flowchart TD
 
 ### Hive / Plain Parquet
 
-**What it is:** Parquet files on S3 with a Hive Metastore (or Glue) tracking partitions. No transaction log. No ACID. Just files.
+**What it is:** Parquet files on S3 with a Hive Metastore (or Glue) tracking partitions. A Hive Metastore is a catalog that records where your data files are and how they are partitioned — think of it as a directory of your data files. No transaction log. No ACID (no guarantees that reads see a consistent snapshot of writes). Just files.
 
 **Use when:**
 - Pipelines are append-only (logs, events, immutable facts)
-- Full partition overwrites are acceptable (see [Idempotency — Hive](../../pipeline-patterns/idempotency/README.md))
+- Full partition overwrites are acceptable
 - You need every engine to read the data without any format dependency
 - Cost and simplicity are the top priorities
 
@@ -172,17 +172,17 @@ flowchart TD
 - You need to update or delete rows (customer records, order corrections)
 - Schema will change — adding columns requires manual migration
 
-**Operational overhead:** Low. No compaction jobs, no transaction log to maintain.
+**Operational overhead:** Low. No compaction jobs (rewriting small files into larger ones for read efficiency), no transaction log to maintain.
 
 ---
 
 ### Delta Lake
 
-**What it is:** Parquet files + a `_delta_log/` transaction log that records every write as a JSON entry. Enables ACID, MERGE, time-travel, and schema enforcement. Built by Databricks; open-sourced.
+**What it is:** Parquet files + a `_delta_log/` transaction log that records every write as a JSON entry. The transaction log is what enables ACID guarantees — each write is recorded atomically, so readers always see a consistent state. Enables ACID, MERGE, time-travel (querying data as it looked at a past point in time), and schema enforcement. Built by Databricks; open-sourced.
 
 **Use when:**
 - Your team is on **Databricks** (Delta is the native format; best tooling, best performance)
-- You need **CDC-style upserts** (SCD2 dimensions, order corrections, late-arriving data)
+- You need **CDC-style upserts** — CDC (Change Data Capture) means tracking inserts, updates, and deletes from a source system and applying them to your lake. This is used for SCD2 dimensions (slowly changing dimension tables that track historical changes), order corrections, and late-arriving data.
 - Single compute engine (Spark) is acceptable — you don't need Trino or Flink reading the same tables natively
 - You want `MERGE INTO` with the lowest engineering effort
 
@@ -190,21 +190,19 @@ flowchart TD
 - You need Trino, Flink, or Snowflake to read these tables natively without a Spark intermediary
 - You anticipate partition evolution (adding a new partition column requires a full rewrite)
 
-**Operational overhead:** Medium. Compaction (`OPTIMIZE`) and log cleanup (`VACUUM`) must be scheduled.
+**Operational overhead:** Medium. Compaction (`OPTIMIZE`, which rewrites many small files into fewer large ones for faster reads) and log cleanup (`VACUUM`, which removes old data files no longer referenced by the transaction log) must be scheduled.
 
 **Key feature:** `replaceWhere` — atomically replace a single partition without scanning the rest of the table.
-
-See [Delta Lake deep dive](../../lakehouse/delta/README.md).
 
 ---
 
 ### Apache Iceberg
 
-**What it is:** An open table format with a 4-level metadata tree (catalog → metadata.json → manifest list → data files). Designed from the ground up for **engine neutrality** — any engine that implements the Iceberg spec reads the same table correctly.
+**What it is:** An open table format with a 4-level metadata tree (catalog → metadata.json → manifest list → data files). Each level acts as an index to the next, so engines can skip files they don't need without scanning everything. Designed from the ground up for **engine neutrality** — any engine that implements the Iceberg spec reads the same table correctly.
 
 **Use when:**
 - You need **multiple engines** to read the same tables (Spark writes + Trino queries + Flink streaming reads)
-- **Partition evolution** is expected — adding or changing partition columns without rewriting all data
+- **Partition evolution** is expected — adding or changing partition columns without rewriting all existing data
 - **Cloud-agnostic** architecture — not locked to AWS or Databricks
 - Snowflake or BigQuery needs to query the same lake tables via external table support
 
@@ -212,17 +210,15 @@ See [Delta Lake deep dive](../../lakehouse/delta/README.md).
 - Your team is entirely on Databricks — Delta's native integration is faster to operate
 - You don't have the bandwidth to manage metadata maintenance (snapshot expiry, manifest rewriting, compaction) — Iceberg's metadata can bloat significantly without it
 
-**Operational overhead:** Medium-High. Three maintenance jobs must run on schedule: `rewrite_data_files` (compaction), `rewrite_manifests`, `expire_snapshots`.
+**Operational overhead:** Medium-High. Three maintenance jobs must run on schedule: `rewrite_data_files` (compaction), `rewrite_manifests` (consolidates the index files that track which data files belong to each snapshot), `expire_snapshots` (removes old snapshot metadata to prevent unbounded growth).
 
 **Key feature:** Hidden partitioning — the engine handles partition transforms (`days(event_ts)`) automatically; queries never need to know the partition scheme.
-
-See [Apache Iceberg deep dive](../../lakehouse/iceberg/README.md).
 
 ---
 
 ### Apache Hudi
 
-**What it is:** A table format optimized for **streaming upserts** — ingesting CDC records from Kafka or Debezium at high frequency (every few minutes) while keeping read performance acceptable via Copy-on-Write (CoW) or Merge-on-Read (MoR) table types.
+**What it is:** A table format optimized for **streaming upserts** — ingesting CDC records from Kafka or Debezium (an open-source tool that captures row-level changes from databases like Postgres and MySQL and publishes them as events) at high frequency (every few minutes) while keeping read performance acceptable via Copy-on-Write (CoW, where each upsert rewrites the affected data files immediately for fast reads) or Merge-on-Read (MoR, where updates are written to a small delta log and merged with base files at read time for faster writes) table types.
 
 **Use when:**
 - You are ingesting **Kafka → lake** with sub-10-minute latency
@@ -234,9 +230,7 @@ See [Apache Iceberg deep dive](../../lakehouse/iceberg/README.md).
 - Your pipelines are batch (hourly or daily) — Iceberg or Delta have better ecosystems for batch CDC
 - You need Trino or non-Spark engines to query the tables — Hudi's multi-engine support is narrower
 
-**Operational overhead:** High. Hudi has the steepest operational learning curve of the four options. Compaction, cleaning, and index management all need tuning.
-
-See [Apache Hudi deep dive](../../lakehouse/hudi/README.md).
+**Operational overhead:** High. Hudi has the steepest operational learning curve of the four options. Compaction, cleaning (removing old file versions), and index management (the index tracks which files contain which record keys to speed up upserts) all need tuning.
 
 ---
 
@@ -287,7 +281,7 @@ See [Apache Hudi deep dive](../../lakehouse/hudi/README.md).
 - **"What's dbt's role in a data platform?"** — Transformation only. It compiles SQL models and materializes them in your warehouse or lake. It has no storage or compute of its own.
 - **"When would you choose Iceberg over Delta?"** — When multiple engines (Spark + Trino + Flink) need to read the same tables, or when partition evolution is required. For a Databricks-only shop, Delta's native integration is hard to beat.
 - **"When is Hudi the right choice?"** — Streaming CDC ingestion at sub-10-minute latency, especially Kafka → lake pipelines. Its incremental query API also lets downstream consumers read only changed rows since their last checkpoint.
-- **"What's the biggest migration risk when choosing a table format?"** — Partition scheme and business key design. Both are expensive to change after data is at scale. Choose deliberately and document the decision as an ADR. See [decision records](../../engineering-leadership/decision-records/README.md).
+- **"What's the biggest migration risk when choosing a table format?"** — Partition scheme and business key design. Both are expensive to change after data is at scale. Choose deliberately and document the decision as an ADR (Architecture Decision Record — a short written record of a significant technical choice and the reasoning behind it).
 
 ---
 

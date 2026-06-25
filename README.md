@@ -5,7 +5,7 @@
 <p><em>Book-chapter-depth notes on the systems, patterns, and tradeoffs behind production data platforms.</em></p>
 
 <p>
-  <img src="https://img.shields.io/badge/Chapters-50-0A66C2?style=flat-square" alt="Chapters"/>
+  <img src="https://img.shields.io/badge/Chapters-62-0A66C2?style=flat-square" alt="Chapters"/>
   <img src="https://img.shields.io/badge/Spark-Internals%20%7C%20Tuning-E25A1C?style=flat-square&logo=apachespark&logoColor=white" alt="Spark"/>
   <img src="https://img.shields.io/badge/Kafka-Streaming-231F20?style=flat-square&logo=apachekafka&logoColor=white" alt="Kafka"/>
   <img src="https://img.shields.io/badge/Lakehouse-Iceberg%20%7C%20Delta%20%7C%20Hudi-22C55E?style=flat-square" alt="Lakehouse"/>
@@ -43,6 +43,45 @@ Each chapter follows the same shape: a **TL;DR** you can read in 60 seconds, a *
 | [Golden Paths](platform-engineering/golden-paths/README.md) | Paving the road so the right thing is the easy thing |
 | [Developer Experience](platform-engineering/developer-experience/README.md) | Time-to-first-pipeline as the metric that matters |
 | [The Intelligent Data Platform](platform-engineering/intelligent-data-platform/README.md) | The metadata substrate, GenAI surfaces, and agentic data engineering — and how to migrate a lake into one |
+| [Feature Stores](platform-engineering/feature-stores/README.md) | Online vs offline store, point-in-time correctness, training-serving skew, the DE's role in ML platforms |
+
+### 🔄 Orchestration
+*Scheduling and coordinating data pipeline execution.*
+
+| Chapter | What it covers |
+|---|---|
+| [Airflow Architecture & Patterns](orchestration/airflow/README.md) | DAGs, executor types, sensors, backfill, SLA monitoring, and the pitfalls that take down production |
+
+### 🔧 Transformation
+*Turning raw data into business-ready form.*
+
+| Chapter | What it covers |
+|---|---|
+| [dbt for Data Engineers](transformation/dbt/README.md) | Models, tests, incremental builds, the staging→mart pattern, semantic layer, and CI/CD integration |
+
+### 🏗️ Infrastructure & Deployment
+*Provisioning, deploying, and operating data infrastructure reliably.*
+
+| Chapter | What it covers |
+|---|---|
+| [Kubernetes for Data Engineering](infrastructure/kubernetes/README.md) | Running Spark and Airflow on K8s, pod sizing, resource quotas, debugging, vs managed services |
+| [Terraform for Data Infrastructure](infrastructure/terraform/README.md) | IaC for S3, EMR, Glue, Kafka, Redshift — versioned, repeatable data stack provisioning |
+| [CI/CD for Data Pipelines](infrastructure/ci-cd/README.md) | Testing pyramid, automated deployment, rollback strategies, schema checks in CI |
+
+### 🔒 Governance & Security
+*Keeping data safe, trustworthy, and compliant.*
+
+| Chapter | What it covers |
+|---|---|
+| [Data Security & Governance](governance/data-security/README.md) | PII handling, column masking, RBAC, GDPR/CCPA right-to-erasure, audit logging |
+| [Schema Evolution Patterns](governance/schema-evolution/README.md) | Backward/forward compatibility, Avro vs Protobuf, Schema Registry, safe vs breaking changes |
+
+### 🧪 Testing
+*Catching data bugs before the business does.*
+
+| Chapter | What it covers |
+|---|---|
+| [Testing Data Pipelines](testing/pipeline-testing/README.md) | Unit, integration, contract, and end-to-end testing for Spark, dbt, and Kafka pipelines |
 
 ### ⚙️ Pipeline Patterns
 *The patterns that decide whether a re-run heals or corrupts your data.*
@@ -64,6 +103,7 @@ Each chapter follows the same shape: a **TL;DR** you can read in 60 seconds, a *
 | [The Catalyst Optimizer](spark-internals/catalyst/README.md) | Logical → physical plan, predicate pushdown, how to read a plan |
 | [Broadcast Join](spark-internals/broadcast-join/README.md) | When to broadcast, thresholds, and the OOM failure mode |
 | [Project Tungsten](spark-internals/tungsten/README.md) | Binary memory, whole-stage codegen, the CPU-bound era of Spark |
+| [Spark Structured Streaming](spark-internals/structured-streaming/README.md) | Micro-batch streaming on Kafka and file sources, watermarking, stateful aggregations, checkpointing, exactly-once |
 
 ### 🌊 Kafka & Streaming
 *Getting data off the bus correctly, at latency.*
@@ -76,6 +116,13 @@ Each chapter follows the same shape: a **TL;DR** you can read in 60 seconds, a *
 | [Offsets](kafka/offsets/README.md) | Commit strategies and the at-least-once / at-most-once tradeoff |
 | [Event Design](kafka/event-design/README.md) | Schema, keys, versioning, and contracts on the wire |
 | [Dead Letter Queues](kafka/dlq/README.md) | Quarantining bad records without crashing the stream |
+
+### ⚡ Real-Time Streaming
+*Low-latency event processing at scale.*
+
+| Chapter | What it covers |
+|---|---|
+| [Apache Flink for Data Engineers](streaming/flink/README.md) | True streaming vs micro-batch, stateful processing, watermarks, RocksDB state, Kafka→Flink→Iceberg patterns |
 
 ### 🧊 Lakehouse
 *Open table formats and the metadata that makes them work.*

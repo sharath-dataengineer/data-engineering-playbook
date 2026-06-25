@@ -4,14 +4,14 @@
 
 ## About This Chapter
 
-**What this is.** Cost attribution maps each line item on the cloud bill back to the team, pipeline, or dataset that caused it. This chapter shows why it's fundamentally a join problem — the bill is keyed on resources, cost is caused by workloads — and how to bridge that with cloud tags, engine telemetry, and a usage-apportionment engine.
+**What this is.** Cost attribution maps each line item on the cloud bill back to the team, pipeline, or dataset that caused it. This chapter shows why it's fundamentally a join problem — the bill is keyed on resources, cost is caused by workloads — and how to bridge that gap with cloud tags, engine telemetry (usage data collected directly from your compute engines), and a usage-apportionment engine (a process that splits shared costs based on measured usage).
 
-**Who it's for.** Data engineers, platform/architecture leads, and engineering managers/tech leads.
+**Who it's for.** Mid-level data engineers, platform/architecture leads, and engineering managers/tech leads.
 
 **What you'll take away.** By the end you'll be able to:
-- Build the three-layer model (CUR billing + engine telemetry + attribution engine) and apportion shared-cluster cost by a measured usage signal such as memory-GB-seconds.
-- Handle the hard 20–30%: idle capacity as an explicit line, storage via S3 Inventory, and data transfer via VPC Flow Logs — and enforce a reconciliation invariant that attributed cost equals the bill to the penny.
-- Track attribution coverage as an SLO and sequence showback before chargeback to keep the numbers politically defensible.
+- Build the three-layer model (CUR billing + engine telemetry + attribution engine) and apportion (split and assign) shared-cluster cost by a measured usage signal such as memory-GB-seconds.
+- Handle the hard 20–30%: idle capacity as an explicit line, storage via S3 Inventory, and data transfer via VPC Flow Logs (AWS tools that capture network-level usage data) — and enforce a reconciliation invariant (a rule that attributed cost must equal the bill exactly) to the penny.
+- Track attribution coverage as an SLO (Service Level Objective, a measurable target) and sequence showback before chargeback to keep the numbers politically defensible.
 
 ---
 
@@ -19,12 +19,12 @@ Cost attribution is the discipline of answering one question without hand-waving
 
 ## TL;DR
 
-- The hard part of cost attribution is not the dashboard, it is the **join key**. You need a consistent dimension (team / pipeline / dataset) stamped onto compute at launch time, because the bill only knows about instances, not jobs.
-- AWS gives you ~70-80% coverage with **cost allocation tags** + **Cost and Usage Report (CUR)**. The remaining 20-30% — shared clusters, S3 storage shared across tables, idle capacity, the data transfer line — is where the real engineering lives.
+- The hard part of cost attribution is not the dashboard, it is the **join key** (the shared identifier that links the bill to the team or job that caused the cost). You need a consistent dimension (team / pipeline / dataset) stamped onto compute at launch time, because the bill only knows about instances, not jobs.
+- AWS gives you ~70-80% coverage with **cost allocation tags** (labels you attach to resources so AWS can group them in the bill) + **Cost and Usage Report (CUR)** (a detailed, line-item billing file AWS delivers to S3). The remaining 20-30% — shared clusters, S3 storage shared across tables, idle capacity, the data transfer line — is where the real engineering lives.
 - **Shared resources break naive tagging.** A multi-tenant EMR cluster or a shared Spark-on-K8s pool carries one set of instance tags but runs ten teams' jobs. You must split that cost by an internal usage signal (vCPU-seconds, executor-seconds, slots), not by the cloud tag.
 - **Untagged and unattributable cost is a first-class metric.** Track "% of spend attributable to an owner" as an SLO. If it drops below ~90%, your chargeback numbers are politically indefensible.
-- **Showback before chargeback.** Publish costs by owner for one or two quarters and let teams trust the numbers before money actually moves. Chargeback with bad attribution destroys trust permanently.
-- Attribution is plumbing for [cost optimization](../cost-optimization/README.md) and [capacity planning](../capacity-planning/README.md): you cannot optimize what you cannot see, and you cannot forecast what you cannot attribute.
+- **Showback before chargeback.** Showback means publishing costs by owner so teams can see what they spend, without money actually moving. Chargeback means those costs are billed back to teams. Publish costs via showback for one or two quarters and let teams trust the numbers before money actually moves. Chargeback with bad attribution destroys trust permanently.
+- Attribution is plumbing for cost optimization and capacity planning: you cannot optimize what you cannot see, and you cannot forecast what you cannot attribute.
 
 ## Why this matters in production
 
@@ -73,9 +73,9 @@ flowchart TD
 
 **Layer 1 — Cloud billing.** Enable the Cost and Usage Report (CUR), not just Cost Explorer. CUR is delivered to S3 as Parquet at hourly, line-item granularity with one column per activated cost allocation tag (`resource_tags_user_team`, `resource_tags_user_pipeline`, etc.). Cost Explorer is a viewer; CUR is the queryable fact table. Activate your tag keys in the Billing console — an *unactivated* tag does not appear as a CUR column even if the resource carries it. This is the single most common silent failure.
 
-**Layer 2 — Engine telemetry.** The bill tells you a `r6g.4xlarge` ran for 6 hours and cost $5.80. It does not tell you that of those 6 hours, marketing's job used 4,000 executor-seconds and finance's used 1,500. That ratio lives in the Spark event log (`spark.eventLog.dir`), in EMR step metrics, or in YARN's `ApplicationResourceUsageReport`. You must collect it.
+**Layer 2 — Engine telemetry.** The bill tells you a `r6g.4xlarge` ran for 6 hours and cost $5.80. It does not tell you that of those 6 hours, marketing's job used 4,000 executor-seconds and finance's used 1,500. That ratio lives in the Spark event log (`spark.eventLog.dir`), in EMR step metrics, or in YARN's `ApplicationResourceUsageReport` (a report YARN generates per application that shows how many resources it consumed). You must collect it.
 
-**Layer 3 — The attribution engine.** This joins the two and produces a ledger at the grain `owner × dataset × day`. The core formula for a shared resource:
+**Layer 3 — The attribution engine.** This joins the two layers and produces a ledger (a complete record of who owes what) at the grain (level of detail) `owner × dataset × day`. The core formula for a shared resource:
 
 ```
 attributed_cost(job_j, resource_r) =
@@ -120,7 +120,7 @@ What you divide by determines who pays. Choose deliberately:
 | Metric | Captures | Gotcha |
 |---|---|---|
 | **executor-seconds** (`executorRunTime` summed) | CPU time held | Ignores memory; a memory-heavy job that pins a node looks cheap |
-| **vCPU-seconds × memory-GB-seconds** (max-of-ratio) | Dominant resource (DRF-style) | Closer to what actually constrains the node; harder to compute |
+| **vCPU-seconds × memory-GB-seconds** (max-of-ratio) | Dominant resource (DRF-style — Dominant Resource Fairness, an allocation method that weights by whichever resource a job uses most) | Closer to what actually constrains the node; harder to compute |
 | **bytes scanned** (Athena/Trino) | Serverless query cost | Only valid for scan-priced engines |
 | **slot-ms** (BigQuery) | Reserved-slot consumption | Specific to BQ reservations |
 
@@ -138,20 +138,20 @@ Whatever you pick, **report idle as its own line**. The moment a team sees "you 
 
 ### 4. Storage attribution is a different beast
 
-Compute is a flow (per-second); storage is a stock (per-GB-month). A 600-table S3 bucket needs prefix-level attribution. Two real options:
+Compute is a flow (billed per-second); storage is a stock (billed per-GB-month, meaning you pay for how much you store over a month). A 600-table S3 bucket needs prefix-level (folder-level) attribution. Two real options:
 
 - **S3 Storage Lens** + prefix conventions (`s3://lake/<domain>/<dataset>/...`) gives you per-prefix bytes, but Storage Lens prefix metrics are advanced-tier (paid) and have depth limits.
-- **S3 Inventory** (daily Parquet manifest of every object with size + last-modified), joined against your table catalog (Iceberg/Glue) to map prefix → dataset → owner. This is the precise path and what I default to for lakehouses, because it also surfaces orphaned files, failed-compaction debris, and old snapshots that pure billing never reveals.
+- **S3 Inventory** (a daily Parquet manifest — a file listing every object — with size + last-modified), joined against your table catalog (Iceberg/Glue) to map prefix → dataset → owner. This is the precise path and what to default to for lakehouses, because it also surfaces orphaned files (leftover files no table points to), failed-compaction debris, and old snapshots that pure billing never reveals.
 
-Storage attribution also forces a versioning conversation: Iceberg snapshot retention, S3 versioning, and incomplete multipart uploads are real GB that someone is paying for and nobody asked for. (See [iceberg-health-monitor](../../../iceberg-health-monitor) for snapshot/orphan tracking that feeds straight into storage attribution.)
+Storage attribution also forces a versioning conversation: Iceberg snapshot retention, S3 versioning, and incomplete multipart uploads are real GB that someone is paying for and nobody asked for.
 
 ### 5. Data transfer is the line item everyone forgets
 
-`DataTransfer-Out`, `DataTransfer-Regional`, and NAT gateway processing (`NatGateway-Bytes`) routinely run 5-12% of a data platform's bill and carry almost no useful tag. Cross-AZ shuffle in a poorly-placed Spark cluster, cross-region replication, and egress to a BI tool all land here. The honest move is to attribute what you can via VPC Flow Logs (source/dest ENI → workload) and put the irreducible remainder in the unattributable bucket — never silently smear it.
+`DataTransfer-Out`, `DataTransfer-Regional`, and NAT gateway processing (`NatGateway-Bytes`) routinely run 5-12% of a data platform's bill and carry almost no useful tag. Cross-AZ shuffle (data moving between AWS Availability Zones) in a poorly-placed Spark cluster, cross-region replication, and egress to a BI tool all land here. The honest move is to attribute what you can via VPC Flow Logs (AWS logs that record which network interface sent or received traffic, letting you trace it back to a workload) and put the irreducible remainder in the unattributable bucket — never silently smear it.
 
 ### 6. Latency of the bill
 
-CUR is finalized days after the fact and is re-stated as credits, RIs, and Savings Plans are applied. Engine telemetry is available in minutes. So you have a **fast/approximate** attribution (engine usage × an estimated blended rate) for daily ops, and a **slow/authoritative** monthly reconciliation against finalized CUR. Conflating these — showing engineers a number that contradicts what finance later bills — is a credibility killer. Label every cost figure as *estimated* or *reconciled*.
+CUR is finalized days after the fact and is re-stated as credits, RIs (Reserved Instances), and Savings Plans are applied. Engine telemetry is available in minutes. So you have a **fast/approximate** attribution (engine usage × an estimated blended rate) for daily ops, and a **slow/authoritative** monthly reconciliation against finalized CUR. Conflating these — showing engineers a number that contradicts what finance later bills — is a credibility killer. Label every cost figure as *estimated* or *reconciled*.
 
 ## Worked example
 
@@ -249,11 +249,11 @@ Track `pct_of_bill` for `bucket = 'attributed'` as your **attribution coverage S
 ## Production patterns
 
 - **Stamp identity at launch, not after.** Inject `team`, `pipeline`, `dataset`, and `cost_center` as both cloud tags *and* Spark conf (`spark.executorEnv.PIPELINE_ID`, `--conf spark.yarn.tags=...`) at job submission, centrally enforced in your orchestration layer (Airflow operator, EMR step wrapper, Spark submit shim). Tags applied by hand always rot.
-- **A tagging policy enforced by Service Control Policies / AWS Config.** A Config rule that flags any EC2/EMR/Glue resource missing required tag keys, plus an SCP that denies `RunInstances` without them, keeps the untagged bucket from creeping back up. Enforcement, not documentation, holds the line.
-- **One canonical owner dimension.** Resolve `team` tags against an org directory (a `dim_team` table sourced from your IdP/HR system) so that `mktg`, `marketing`, and `MKTG-2` collapse to one owner. Free-text tags fork; a dimension table with surrogate keys does not.
-- **Cost ledger as a versioned table.** Store the `owner × dataset × day` ledger in Iceberg so you can re-run attribution after late-arriving CUR restatements and keep an audit trail of *why* a number changed.
+- **A tagging policy enforced by Service Control Policies / AWS Config.** A Config rule that flags any EC2/EMR/Glue resource missing required tag keys, plus an SCP (Service Control Policy — an AWS guardrail that can block API calls organization-wide) that denies `RunInstances` without them, keeps the untagged bucket from creeping back up. Enforcement, not documentation, holds the line.
+- **One canonical owner dimension.** Resolve `team` tags against an org directory (a `dim_team` table sourced from your IdP/HR system — the identity provider that manages employee records) so that `mktg`, `marketing`, and `MKTG-2` collapse to one owner. Free-text tags fork; a dimension table with surrogate keys does not.
+- **Cost ledger as a versioned table.** Store the `owner × dataset × day` ledger in Iceberg so you can re-run attribution after late-arriving CUR restatements (when AWS adjusts past bills for credits or savings plans) and keep an audit trail of *why* a number changed.
 - **Anomaly detection on the attributed series, not the raw bill.** A 3× spike on `owner=risk, dataset=fraud_features` is far more actionable than "the bill went up." Alert per-owner with a day-over-day and week-over-week threshold.
-- **Unit economics on top of attribution.** Once cost is attributed to a dataset, divide by a business unit (cost per 1M events processed, cost per dashboard query, cost per model training run). That number is what executives actually act on, and it feeds directly into [capacity planning](../capacity-planning/README.md).
+- **Unit economics on top of attribution.** Once cost is attributed to a dataset, divide by a business unit (cost per 1M events processed, cost per dashboard query, cost per model training run). That number is what executives actually act on, and it feeds directly into capacity planning.
 
 ## Anti-patterns & failure modes
 
@@ -295,9 +295,6 @@ In practice: CUR for the dollars, a home-grown Spark/EMR telemetry collector for
 
 ## Further reading
 
-- [Cost Optimization](../cost-optimization/README.md) — what you do *after* attribution tells you where the money is.
-- [Capacity Planning](../capacity-planning/README.md) — forecasting that consumes the attributed unit-economics series.
-- [Observability › Metrics](../../observability/metrics/README.md) — the telemetry collection patterns that feed Layer 2.
-- [iceberg-health-monitor](../../../iceberg-health-monitor) — snapshot/orphan tracking that feeds storage attribution.
-- [FinOps Foundation — Cost Allocation & Showback/Chargeback capabilities](https://www.finops.org/framework/capabilities/) — the canonical framework vocabulary.
-- [AWS — Using the Cost and Usage Report with cost allocation tags](https://docs.aws.amazon.com/cur/latest/userguide/what-is-cur.html) — the authoritative reference for Layer 1.
+- Cost Optimization — what you do *after* attribution tells you where the money is.
+- Capacity Planning — forecasting that consumes the attributed unit-economics series.
+- Observability › Metrics — the telemetry collection patterns that feed Layer 2.

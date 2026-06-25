@@ -4,14 +4,14 @@
 
 ## About This Chapter
 
-**What this is.** A merge strategy is how new source data is reconciled into a target table. This chapter compares six — truncate+load, append-only, upsert, full sync with hard delete, soft delete, and SCD Type 2 — with worked SQL/PySpark for RDBMS, Delta, and Iceberg.
+**What this is.** A merge strategy is how new source data is reconciled (combined and synchronized) into a target table. This chapter compares six strategies — truncate+load, append-only, upsert, full sync with hard delete, soft delete, and SCD Type 2 — with worked SQL/PySpark examples for RDBMS (relational databases like PostgreSQL), Delta Lake, and Apache Iceberg.
 
-**Who it's for.** data engineers, analytics engineers, platform/architecture leads, and engineers preparing for senior/staff data-engineering interviews.
+**Who it's for.** Mid-level data engineers, analytics engineers, platform/architecture leads, and engineers preparing for senior/staff data-engineering interviews.
 
 **What you'll take away.** By the end you'll be able to:
-- Choose a merge strategy from source shape (full extract vs. delta vs. CDC), delete requirements, history needs, and table size.
-- Implement upsert with an `updated_ts` change guard, full sync via snapshot or CDC delete feed, soft delete behind a view, and SCD2 close-and-insert across engines.
-- Avoid strategy-driven corruption — append-only duplicates on entity tables, ghost rows from upsert-without-delete, and `NOT IN` deletes that don't scale.
+- Choose a merge strategy based on how your source delivers data (full extract vs. delta vs. CDC), whether you need to propagate deletes, whether you need history, and how large your table is.
+- Implement upsert with an `updated_ts` change guard (a condition that prevents overwriting newer data with older data), full sync via snapshot or CDC delete feed, soft delete behind a view, and SCD2 close-and-insert across engines.
+- Avoid strategy-driven corruption — append-only duplicates on entity tables, ghost rows (stale records that were deleted in the source but remain in the target) from upsert-without-delete, and `NOT IN` deletes that don't scale.
 
 ---
 
@@ -32,7 +32,7 @@ The wrong strategy silently corrupts data. Truncate+Load on a 500M-row table wil
 
 All examples use two tables:
 
-**`dim_customer`** — non-partitioned dimension (customers can update their profile)
+**`dim_customer`** — non-partitioned dimension table (customers can update their profile)
 
 | customer_id | name | email | status | updated_ts |
 |---|---|---|---|---|
@@ -50,18 +50,18 @@ Source delivers a daily extract. The extract contains new customers, updated cus
 
 ### What it is
 
-Truncate the target table, then load the full source extract from scratch. The target is always a point-in-time snapshot of the source.
+Truncate the target table (erase all its rows), then load the full source extract from scratch. The target is always a point-in-time snapshot of the source.
 
 ### When to use
 
 - Source delivers a full extract every run (no delta, no watermark)
-- Table is small enough that full reload completes within SLA (rule of thumb: < 5M rows, or < 5 minutes runtime)
+- Table is small enough that a full reload completes within your time window (rule of thumb: < 5M rows, or < 5 minutes runtime)
 - Simplicity matters more than efficiency — no merge logic to debug
 
 ### When to avoid
 
 - Large tables: truncating 500M rows and reloading them every hour is expensive and slow
-- When downstream tables have foreign keys — truncate breaks referential integrity mid-load
+- When downstream tables have foreign keys (relationships that point to rows in this table) — truncate breaks those relationships mid-load
 - When audit history of changes is needed
 
 ### RDBMS (PostgreSQL)
@@ -122,7 +122,7 @@ Dynamic partition overwrite rewrites only the partitions present in `df`. Withou
 
 ### What it is
 
-Insert new rows. Never update or delete existing ones. The table grows monotonically.
+Insert new rows. Never update or delete existing ones. The table grows monotonically (it only ever gets bigger, never shrinks).
 
 ### When to use
 
@@ -133,7 +133,7 @@ Insert new rows. Never update or delete existing ones. The table grows monotonic
 ### When to avoid
 
 - Entity tables (customers, orders, products) — source will re-send updated versions; append creates duplicates
-- When you need to query "the latest record per customer" efficiently — that requires dedup on every read
+- When you need to query "the latest record per customer" efficiently — that requires a deduplication step on every read
 
 ### RDBMS
 
@@ -165,7 +165,7 @@ df.write \
 ### What it is
 
 For each row in the source:
-- If a row with the same business key already exists in the target → **update** it
+- If a row with the same business key (the column or combination of columns that uniquely identifies a record, like `customer_id`) already exists in the target → **update** it
 - If no matching row exists → **insert** it
 - Rows in the target that have no matching row in the source → **left untouched**
 
@@ -179,7 +179,7 @@ This is the most common strategy for dimension tables and entity tables with inc
 
 ### When to avoid
 
-- When the target must mirror the source exactly — ghost rows (customers that were deleted in source) will accumulate
+- When the target must mirror the source exactly — ghost rows (customers that were deleted in source) will accumulate over time
 - When source can re-send rows with stale `updated_ts` — a guard condition is needed to prevent overwriting newer data with older data
 
 ### RDBMS (PostgreSQL — `ON CONFLICT`)
@@ -248,13 +248,13 @@ WHEN NOT MATCHED THEN
 
 Same as Upsert, but also **deletes rows** from the target that no longer exist in the source. After every run, the target is an exact mirror of the source.
 
-This requires the source to deliver a **full extract** (not just changed rows), or a separate **delete feed** listing the IDs that were deleted.
+This requires the source to deliver a **full extract** (not just changed rows), or a separate **delete feed** (a list of IDs that were deleted from the source).
 
 ### When to use
 
 - Target must exactly mirror source — referential integrity, compliance, downstream systems assume no ghost rows
-- Source provides a full snapshot (e.g., a CRM export of all active customers)
-- Or: source provides a CDC delete feed (e.g., Debezium `op=d` records)
+- Source provides a full snapshot (for example, a CRM export of all active customers)
+- Or: source provides a CDC (Change Data Capture — a log of every insert, update, and delete that happened in the source database) delete feed (for example, Debezium `op=d` records)
 
 ### When to avoid
 
@@ -297,7 +297,7 @@ WHERE NOT EXISTS (
 
 ### RDBMS (PostgreSQL — CDC delete feed approach)
 
-When source provides explicit delete records (e.g., a change log with `operation = 'D'`):
+When source provides explicit delete records (for example, a change log with `operation = 'D'`):
 
 ```sql
 -- Apply deletes from the CDC feed
@@ -379,7 +379,7 @@ WHEN NOT MATCHED THEN
 
 ### What it is
 
-Instead of physically removing a row, mark it as deleted with a flag or timestamp. The row stays in the table; consumers filter it out.
+Instead of physically removing a row, mark it as deleted with a flag or timestamp. The row stays in the table; consumers filter it out when reading. Think of it as hiding a row rather than erasing it.
 
 ```sql
 -- Physical delete (hard): row is gone
@@ -401,7 +401,7 @@ WHERE customer_id = 101;
 
 - All consumers must remember to add `WHERE is_deleted = FALSE` — easy to forget and causes data quality issues
 - Table grows indefinitely — physical storage for logically deleted rows is never reclaimed without archival
-- When the deleted rows are PII and must be erased (e.g., GDPR right to erasure) — a soft delete is not erasure
+- When the deleted rows contain PII (Personally Identifiable Information) and must be erased (for example, GDPR right to erasure) — a soft delete is not a true erasure
 
 ### RDBMS
 
@@ -437,7 +437,7 @@ WHERE customer_id IN (
 );
 ```
 
-**Tip:** Create a view that hides deleted rows so consumers never have to remember the filter:
+**Tip:** Create a view (a saved query that behaves like a table) that hides deleted rows so consumers never have to remember the filter:
 
 ```sql
 CREATE OR REPLACE VIEW analytics.dim_customer_active AS
@@ -451,7 +451,9 @@ WHERE is_deleted = FALSE;
 
 ### What it is
 
-Slowly Changing Dimension Type 2 (SCD2) preserves full change history for a dimension entity. When a row changes:
+SCD Type 2 (Slowly Changing Dimension Type 2) is the standard way to preserve the full history of changes for a dimension table. "Slowly Changing Dimension" refers to a table that tracks entities like customers or products whose attributes change over time, but not constantly.
+
+When a row changes in SCD Type 2:
 - The **existing row** is closed: `effective_end_ts` is set to now, `is_current` is set to FALSE
 - A **new row** is inserted with the new values, `effective_start_ts` = now, `is_current` = TRUE
 
@@ -465,7 +467,7 @@ The table contains one row per customer **per version of their data**, not one r
 
 ### When to avoid
 
-- The dimension has very high cardinality and changes frequently — the table can grow extremely large
+- The dimension has very high cardinality (many distinct values) and changes frequently — the table can grow extremely large
 - Analysts never need historical values — SCD2 adds complexity for no benefit; use Upsert (SCD1) instead
 - Consumers aren't built for it — most BI tools need explicit training or modeling to handle multiple rows per entity
 
@@ -633,7 +635,7 @@ Do analysts need point-in-time queries?
 
 - **"What's the risk of soft delete?"** — Every consumer must filter on `is_deleted = FALSE`. In practice, someone forgets, and you get phantom rows in a report. Mitigate with a view that hides deleted rows as the contract surface.
 
-- **"Which merge strategy is idempotent?"** — All of them, if implemented correctly. Truncate+Load is trivially idempotent. Upsert and Full Sync are idempotent with a proper business key and a `updated_ts` guard. See the [Idempotency chapter](../idempotency/README.md) for the per-storage-engine patterns.
+- **"Which merge strategy is idempotent (safe to re-run multiple times and always produce the same result)?"** — All of them, if implemented correctly. Truncate+Load is trivially idempotent. Upsert and Full Sync are idempotent with a proper business key and a `updated_ts` guard. See the Idempotency chapter for the per-storage-engine patterns.
 
 ---
 

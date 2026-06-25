@@ -4,31 +4,31 @@
 
 ## About This Chapter
 
-**What this is.** "Partitioning" in Spark means three different things — runtime task partitions, shuffle partitions, and on-disk storage layout. This chapter separates them and shows how each affects performance, file sizing, and pruning.
+**What this is.** "Partitioning" in Spark means three different things — runtime task partitions, shuffle partitions, and on-disk storage layout. This chapter separates them and shows how each affects performance, file sizing, and pruning (skipping files or directories that don't match a filter).
 
-**Who it's for.** Data engineers, analytics engineers, data/ML engineers, and platform/architecture leads.
+**Who it's for.** Mid-level data engineers, analytics engineers, data/ML engineers, and platform/architecture leads.
 
 **What you'll take away.** By the end you'll be able to:
 - Distinguish runtime, shuffle, and storage partitioning, and pick the right lever for a balance vs. read-optimization problem.
-- Prevent the small-files problem with a deliberate write-path `repartition` and async compaction, and choose `repartition` vs `coalesce` correctly.
+- Prevent the small-files problem with a deliberate write-path `repartition` and async compaction (background file merging), and choose `repartition` vs `coalesce` correctly.
 - Design pruning-friendly layouts (partition columns, DPP, Iceberg/Delta transforms and partition evolution) and verify pruning with `explain("formatted")`.
 
 ---
 
-Partitioning is the one Spark concept that lives in three different worlds at once, and engineers conflate them constantly. There is **RDD/DataFrame partitioning** (how the data is split across tasks in memory at runtime), **shuffle partitioning** (how exchange operators redistribute rows by key), and **storage/Hive partitioning** (the physical directory layout on disk, e.g. `dt=2026-06-18/`). They interact, but they are not the same lever, and pulling the wrong one is the difference between a 4-minute job and a 40-minute one.
+Partitioning is the one Spark concept that lives in three different worlds at once, and engineers mix them up constantly. There is **RDD/DataFrame partitioning** (how the data is split across tasks in memory at runtime), **shuffle partitioning** (how exchange operators redistribute rows by key — a "shuffle" is when Spark moves data across the network to reorganize it), and **storage/Hive partitioning** (the physical directory layout on disk, e.g. `dt=2026-06-18/`). They interact, but they are not the same lever, and pulling the wrong one is the difference between a 4-minute job and a 40-minute one.
 
 ## TL;DR
 
-- Three distinct partitioning concepts share one word: **runtime task partitions**, **shuffle partitions** (`spark.sql.shuffle.partitions`), and **on-disk storage partitions** (the directory layout). Always say which one you mean.
-- Storage partition columns should be **low-to-medium cardinality** and align with how readers filter. `dt` (day) is almost always right; `user_id` is almost always wrong. The goal is partition *pruning*, not infinite subdivision.
+- Three distinct partitioning concepts share one word: **runtime task partitions** (how data is split in memory), **shuffle partitions** (`spark.sql.shuffle.partitions` — controls how many buckets data is reorganized into during a shuffle), and **on-disk storage partitions** (the directory layout on disk). Always say which one you mean.
+- Storage partition columns should be **low-to-medium cardinality** (meaning few distinct values — hundreds, not millions) and align with how readers filter. `dt` (day) is almost always right; `user_id` is almost always wrong. The goal is partition *pruning* (skipping irrelevant directories entirely), not infinite subdivision.
 - The small-files problem is the most expensive partitioning mistake in practice: each output file is metadata, an open/close, and a task. 200k tiny files in a partition will cripple your metastore listing and your reader before it cripples your compute.
 - Target output files of **128 MB–1 GB**. Control them with a deliberate `repartition`/`coalesce` on the *write path*, not by accident.
-- AQE (`spark.sql.adaptive.enabled`) coalesces shuffle partitions automatically post-Spark-3.0, so the old "tune `shuffle.partitions` to a magic number" advice is mostly obsolete — but it does nothing for *storage* layout, which you still own.
+- AQE (Adaptive Query Execution — `spark.sql.adaptive.enabled`, a Spark feature that self-tunes at runtime) coalesces shuffle partitions automatically post-Spark-3.0, so the old "tune `shuffle.partitions` to a magic number" advice is mostly obsolete — but it does nothing for *storage* layout, which you still own.
 - Iceberg/Delta hidden partitioning and partition *transforms* (`bucket`, `truncate`, `days`) decouple physical layout from the columns users query, which is the modern answer to most partitioning pain.
 
 ## Why this matters in production
 
-A concrete scenario from a clickstream pipeline. The raw events land in S3 partitioned by `event_date`. A downstream job reads 90 days, joins to a `dim_user` table, aggregates by `country`, and writes a daily mart. The job started taking 38 minutes and the cost doubled in a quarter, with no change in data volume per day.
+Here is a concrete scenario from a clickstream pipeline. The raw events land in S3 partitioned by `event_date`. A downstream job reads 90 days, joins to a `dim_user` table, aggregates by `country`, and writes a daily mart. The job started taking 38 minutes and the cost doubled in a quarter, with no change in data volume per day.
 
 The root cause was three partitioning decisions, none individually catastrophic, compounding:
 
@@ -40,7 +40,7 @@ None of this shows up in a code review. It shows up as a slow job, an S3 bill, a
 
 ## How it works
 
-A Spark DataFrame is a logical plan; at execution it becomes a set of **partitions**, each processed by one **task** on one core. The number of partitions at any stage is determined by the operator that produced it.
+A Spark DataFrame is a logical plan (a description of what to compute, not the result itself); at execution it becomes a set of **partitions**, each processed by one **task** on one core. The number of partitions at any stage is determined by the operator that produced it.
 
 ```mermaid
 flowchart LR
@@ -69,13 +69,13 @@ The partition count by source:
 | Explicit | whatever you ask for | `repartition(n)`, `coalesce(n)`, `repartition(col)` |
 | Write | in-memory partitions × distinct storage-partition values | `partitionBy(...)`, plus a pre-write repartition |
 
-**Shuffle hash partitioning** is the mechanical core. For a key `k`, the destination partition is:
+**Shuffle hash partitioning** is the mechanical core of how Spark redistributes data. For a key `k`, the destination partition is:
 
 ```
 partitionId = pmod(hash(k), numShufflePartitions)
 ```
 
-This is why a single hot key (`country = 'US'` with 60% of rows) lands every one of its rows in *one* shuffle partition — the partitioner is deterministic on the key, so one task gets a 30 GB partition while 199 tasks finish in seconds. That is data skew, and it is a *consequence* of how hash partitioning works, not a separate phenomenon. See [skew-handling](../skew-handling/README.md).
+This is why a single hot key (`country = 'US'` with 60% of rows) lands every one of its rows in *one* shuffle partition — the partitioner is deterministic on the key, so one task gets a 30 GB partition while 199 tasks finish in seconds. That is data skew (uneven distribution of rows across tasks), and it is a *consequence* of how hash partitioning works, not a separate phenomenon. See [skew-handling](../skew-handling/README.md).
 
 **Storage partitioning** is independent of all of this. When you write `partitionBy("dt", "country")`, Spark creates a directory tree `dt=.../country=.../part-*.parquet`. The query optimizer can then *prune* — at plan time it reads the directory names, and a filter `WHERE dt = '2026-06-18'` skips every other directory without opening a file. That pruning is the entire economic justification for storage partitioning.
 
@@ -83,7 +83,7 @@ This is why a single hot key (`country = 'US'` with 60% of rows) lands every one
 
 ### Partition pruning only works if the predicate matches the partition column directly
 
-This is the single most common silent failure. Pruning happens when the filter is on the *partition column*, as a literal or a value Spark can resolve at plan time:
+Pruning (skipping directories that don't match your filter) is the main benefit of storage partitioning — but it only works when the filter is on the *partition column itself*, as a literal or a value Spark can resolve at plan time. This is the single most common silent failure:
 
 ```sql
 -- PRUNES: only reads dt=2026-06-18 directory
@@ -99,7 +99,7 @@ WHERE date_trunc('month', to_date(dt)) = '2026-06-01'
 WHERE country = 'US'   -- if only dt is a partition column
 ```
 
-The `date_trunc` case is a classic. The partition column `dt` is a string `'2026-06-18'`; the moment you wrap it in `to_date(...)`, Spark can no longer match the predicate against directory names and falls back to a full scan. The fix is to keep partition predicates on the raw partition column, or to add a derived partition column (`mth`) if month-level filtering is common. **Dynamic Partition Pruning** (`spark.sql.optimizer.dynamicPartitionPruning.enabled`, on by default in 3.x) extends pruning to the case where the partition values come from the *other* side of a broadcast join — extremely valuable for star-schema fact tables filtered through a date dimension. See [broadcast-join](../broadcast-join/README.md).
+The `date_trunc` case is a classic. The partition column `dt` is a string `'2026-06-18'`; the moment you wrap it in `to_date(...)`, Spark can no longer match the predicate against directory names and falls back to a full scan. The fix is to keep partition predicates on the raw partition column, or to add a derived partition column (`mth`) if month-level filtering is common. **Dynamic Partition Pruning** (`spark.sql.optimizer.dynamicPartitionPruning.enabled`, on by default in 3.x) extends pruning to the case where the partition values come from the *other* side of a broadcast join (a join where one table is small enough to be sent to every executor) — extremely valuable for star-schema fact tables filtered through a date dimension. See [broadcast-join](../broadcast-join/README.md).
 
 ### The small-files problem, quantified
 
@@ -107,7 +107,7 @@ Every Parquet file carries footer metadata, requires an S3 GET + range reads, an
 
 - **Listing**: Hive metastore / S3 `ListObjects` is paginated at 1,000 keys. A table with 5M files spends minutes just enumerating before planning.
 - **Task overhead**: ~200 ms of scheduling + JVM warmup per task. 100k files = 100k tasks = pure overhead even at 0 bytes of useful work.
-- **Driver memory**: file statuses are held on the driver. Millions of `FileStatus` objects OOM the driver before any executor does work.
+- **Driver memory**: file statuses are held on the driver (the coordinator process). Millions of `FileStatus` objects OOM (out-of-memory crash) the driver before any executor does work.
 
 The arithmetic that matters: you want roughly `total_data_size / 256 MB` output files. A 50 GB daily partition should be ~200 files, not 40,000. The lever is a **pre-write repartition**:
 
@@ -124,6 +124,8 @@ Without the `repartition`, the number of output files = (in-memory partitions) �
 
 ### `repartition` vs `coalesce` — they are not symmetric
 
+Both reduce partition count, but they work very differently. `repartition` does a full shuffle (data moves across the network), while `coalesce` simply merges adjacent partitions on the same executor without a shuffle.
+
 | | `repartition(n)` | `coalesce(n)` |
 |---|---|---|
 | Triggers shuffle | Yes (full) | No (merges adjacent partitions) |
@@ -132,15 +134,15 @@ Without the `repartition`, the number of output files = (in-memory partitions) �
 | Cost | Expensive (network) | Cheap |
 | Risk | — | `coalesce(1)` collapses upstream parallelism *backwards* through narrow stages |
 
-The `coalesce(1)` trap: `df.coalesce(1).write(...)` does not just merge at the end — because `coalesce` is a narrow dependency, Spark may run the *entire upstream computation* on a single task to avoid a shuffle. A heavy aggregation that should use 400 cores runs on 1. When you genuinely need one output file, `repartition(1)` is usually safer despite the shuffle, because it isolates the single-partition stage behind an exchange.
+The `coalesce(1)` trap: `df.coalesce(1).write(...)` does not just merge at the end — because `coalesce` is a narrow dependency (no shuffle boundary), Spark may run the *entire upstream computation* on a single task to avoid a shuffle. A heavy aggregation that should use 400 cores runs on 1. When you genuinely need one output file, `repartition(1)` is usually safer despite the shuffle, because it isolates the single-partition stage behind an exchange (a shuffle boundary), keeping all upstream work parallel.
 
 ### Range partitioning and why `repartitionByRange` exists
 
-Hash partitioning balances by key *count*, not key *size*, and produces no global ordering. `repartitionByRange(n, "ts")` samples the data, computes range boundaries, and assigns rows so partitions are ordered and roughly equal-sized — this is what makes sorted writes (and Z-order-like locality) possible and is the basis of efficient range-pruned reads. The cost is the sampling pass and sensitivity to skewed distributions in the sort key.
+Hash partitioning balances by key *count*, not key *size*, and produces no global ordering. `repartitionByRange(n, "ts")` samples the data, computes range boundaries, and assigns rows so partitions are ordered and roughly equal-sized — this is what makes sorted writes (and Z-order-like locality, meaning nearby values are stored close together on disk) possible and is the basis of efficient range-pruned reads. The cost is the sampling pass and sensitivity to skewed distributions in the sort key.
 
 ### Bucketing — the partitioning you store to avoid shuffles
 
-Bucketing (`bucketBy(n, "user_id")`) hash-partitions data into a *fixed* number of files-per-partition and records it in the table metadata. Two bucketed tables on the same key and bucket count can be joined **shuffle-free** — the data is already co-located. It is powerful for repeated large-table joins on a high-cardinality key, but operationally fragile in plain Hive/Spark (the bucket count is baked in; changing it means a full rewrite; small inserts violate the layout). In practice, Iceberg's `bucket(N, col)` partition transform is a cleaner version of the same idea.
+Bucketing (`bucketBy(n, "user_id")`) hash-partitions data into a *fixed* number of files-per-partition and records it in the table metadata. Two bucketed tables on the same key and bucket count can be joined **shuffle-free** — the data is already co-located (stored together), so Spark doesn't need to move any rows across the network. It is powerful for repeated large-table joins on a high-cardinality (many distinct values) key, but operationally fragile in plain Hive/Spark (the bucket count is baked in; changing it means a full rewrite; small inserts violate the layout). In practice, Iceberg's `bucket(N, col)` partition transform is a cleaner version of the same idea.
 
 ## Worked example
 
@@ -208,10 +210,10 @@ WHERE event_ts >= '2026-06-18' AND event_ts < '2026-06-19';
 
 - **Partition by ingestion/event date, almost always.** `days(event_ts)` or a `dt` string column is the default that satisfies the most common filter (time range) and keeps partition count bounded and predictable.
 - **Repartition on the write path to control file size deliberately.** `repartition(n, partition_cols)` before `partitionBy` so each task targets one storage partition and you hit your file-size target. This single pattern prevents the small-files problem.
-- **Run compaction as a scheduled job, not inline.** For streaming sinks that must write small files for latency, accept them and run an async compaction job (`OPTIMIZE` in Delta, `rewrite_data_files` in Iceberg) to merge into 256 MB+ files on a cadence. Decouple write latency from read efficiency. See [lakehouse/iceberg](../../lakehouse/iceberg/README.md).
+- **Run compaction as a scheduled job, not inline.** For streaming sinks that must write small files for latency, accept them and run an async compaction job (a background process that merges small files — `OPTIMIZE` in Delta, `rewrite_data_files` in Iceberg) to merge into 256 MB+ files on a cadence. Decouple write latency from read efficiency. See [lakehouse/iceberg](../../lakehouse/iceberg/README.md).
 - **Use `partitionOverwriteMode=dynamic`** so a backfill of one day overwrites only that day's directories instead of the entire table — turns a multi-hour full rewrite into a per-partition operation.
-- **Prefer Iceberg/Delta partition transforms over raw directory partitioning** when you can. `bucket`, `truncate`, and `days` decouple the physical layout from query columns and support **partition evolution** — you can change the partitioning of a table without rewriting history.
-- **Combine a coarse storage partition with file-level data skipping.** Partition by `dt`, then sort/Z-order within the partition by your secondary filter column (e.g. `country`). You get directory pruning *and* Parquet row-group statistics pruning, without exploding directory count.
+- **Prefer Iceberg/Delta partition transforms over raw directory partitioning** when you can. `bucket`, `truncate`, and `days` decouple the physical layout from query columns and support **partition evolution** (changing how a table is partitioned without rewriting old data) — you can change the partitioning of a table without rewriting history.
+- **Combine a coarse storage partition with file-level data skipping.** Partition by `dt`, then sort/Z-order (cluster rows with similar values together) within the partition by your secondary filter column (e.g. `country`). You get directory pruning *and* Parquet row-group statistics pruning (skipping row groups whose min/max stats don't match your filter), without exploding directory count.
 
 ## Anti-patterns & failure modes
 
@@ -256,5 +258,3 @@ Rule of thumb: **storage partitioning is a read-optimization decision; runtime/s
 - [Catalyst](../catalyst/README.md) — where partition filters are pushed down at plan time
 - [Iceberg](../../lakehouse/iceberg/README.md) — partition transforms, hidden partitioning, partition evolution
 - [Cost Optimization](../../finops/cost-optimization/README.md) — the bill that small files and missed pruning generate
-- Apache Spark SQL Performance Tuning guide — [spark.apache.org/docs/latest/sql-performance-tuning.html](https://spark.apache.org/docs/latest/sql-performance-tuning.html)
-- Iceberg partitioning & hidden partitioning — [iceberg.apache.org/docs/latest/partitioning](https://iceberg.apache.org/docs/latest/partitioning/)

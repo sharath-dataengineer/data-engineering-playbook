@@ -4,45 +4,45 @@
 
 ## About This Chapter
 
-**What this is.** A treatment of developer experience (DevEx) for data platforms as a measurable, SLO-bearing product — the friction between a data engineer's intent and a correct, observable pipeline in production, and how to collapse the feedback loops that create it.
+**What this is.** A practical guide to developer experience (DevEx) for data platforms — DevEx means how easy or hard it is for a data engineer to go from writing code to having a correct, monitored pipeline running in production. This chapter treats DevEx as a measurable product you can track with real metrics (called SLOs, or Service Level Objectives — targets you commit to hitting), not just a list of nice-to-haves.
 
-**Who it's for.** Data engineers, platform/architecture leads, engineering managers/tech leads, and engineers preparing for senior/staff data-engineering interviews.
+**Who it's for.** Mid-level data engineers, platform/architecture leads, engineering managers/tech leads, and engineers preparing for senior/staff data-engineering interviews.
 
 **What you'll take away.** By the end you'll be able to:
-- Drive the inner loop under ~90 seconds with local-mode Spark on sampled, shape-preserving fixtures, and reason about loop value as `N × ΔL`.
-- Enforce local/CI/prod parity by digest-pinned image and locked deps, and rewrite raw engine errors into actionable one-liners.
-- Instrument the metrics that matter — inner-loop p50/p90, CI false-failure rate, time-to-first-pipeline — and scale DevEx investment to team size and churn.
+- Drive the inner loop (the cycle of edit → test → result) under ~90 seconds using Spark running locally on small, representative sample data, and reason about loop value as `N × ΔL` (number of daily iterations times the time you cut from each iteration).
+- Enforce parity (consistency) between your local environment, CI (automated testing), and production by using a digest-pinned image (a container image locked to an exact version, not a floating tag) and locked dependency files, and rewrite raw engine errors into actionable one-liners.
+- Instrument the metrics that matter — inner-loop p50/p90 (median and 90th-percentile iteration time), CI false-failure rate (how often CI fails for reasons unrelated to your code), and time-to-first-pipeline — and scale DevEx investment to team size and churn.
 
 ---
 
-Developer experience (DevEx) for a data platform is the measured friction between a data engineer's intent and a correct, observable pipeline running in production. On data platforms it is harder than on application platforms, because the inner loop is slow (a Spark job takes minutes to fail), the failure surface is wide (schema, skew, late data, IAM, quota), and the feedback is often a stack trace from a JVM you didn't write. This chapter is about collapsing that loop.
+Developer experience (DevEx) for a data platform is the measured friction between a data engineer's intent and a correct, observable pipeline running in production. On data platforms it is harder than on application platforms, because the inner loop is slow (a Spark job takes minutes to fail), the failure surface is wide (schema errors, data skew, late-arriving data, permission errors, quota limits), and the feedback is often a stack trace from a JVM (Java Virtual Machine — the runtime Spark runs on) you didn't write. This chapter is about collapsing that loop.
 
 ## TL;DR
 
 - The metric that matters is **inner-loop latency**: time from a code edit to a trustworthy pass/fail signal. On data teams this is routinely 8–20 minutes (submit to YARN/K8s, pull image, read S3, fail on row 4M). Drive it under 90 seconds with local sampled data and you change how people work.
 - **Time-to-first-pipeline** (onboarding to merged, scheduled, monitored job) is the leading indicator of platform health. Measure it in hours, not story points. If it's > 1 day, your platform has a documentation or scaffolding gap, not a tooling gap.
 - DevEx is an **SLO-bearing product**, not a wiki. Treat `time-to-first-pipeline`, `inner-loop p50/p90`, and `CI false-failure rate` as numbers you own and regress against.
-- The single highest-leverage investment is **local/CI parity** — the same image, the same catalog client, the same data contracts in `pytest` as in prod. Without it, "works on my laptop" becomes a production incident.
-- Error messages are a feature. A raw `Py4JJavaError` with 200 lines of Scala is a DevEx defect; a one-line "partition column `event_date` missing, did you forget `--conf spark.sql.sources.partitionOverwriteMode=dynamic`?" is a fix.
+- The single highest-leverage investment is **local/CI parity** — the same image, the same catalog client, the same data contracts in `pytest` (Python's standard testing framework) as in prod. Without it, "works on my laptop" becomes a production incident.
+- Error messages are a feature. A raw `Py4JJavaError` (the generic Java error Spark throws back to Python) with 200 lines of Scala is a DevEx defect; a one-line "partition column `event_date` missing, did you forget `--conf spark.sql.sources.partitionOverwriteMode=dynamic`?" is a fix.
 - Friction compounds. A 12-minute inner loop run 15× a day is 3 hours of an engineer staring at logs — per engineer, per day.
 
 ## Why this matters in production
 
-A concrete scenario. A new engineer joins the marketing-analytics squad. Their first task: add a `is_trial_conversion` column to the `fct_subscription_events` Iceberg table. Sounds like a one-day task. What actually happens on a platform with poor DevEx:
+A concrete scenario. A new engineer joins the marketing-analytics squad. Their first task: add a `is_trial_conversion` column to the `fct_subscription_events` Iceberg table (Iceberg is an open table format for large-scale data — it manages schema, partitioning, and versioning). Sounds like a one-day task. What actually happens on a platform with poor DevEx:
 
-1. Day 1–2: chase down which AWS account, which Glue catalog, which Airflow instance. Find the repo by asking in Slack.
+1. Day 1–2: chase down which AWS account, which Glue catalog (AWS Glue is a metadata service that tracks table schemas and locations), which Airflow instance. Find the repo by asking in Slack.
 2. Day 3: clone, `pip install`, hit a dependency conflict because the repo pins `pyspark==3.3.1` but the shared wheel is `3.5.0`. No `Dockerfile` that matches prod.
-3. Day 4: write the transform, submit to a dev EMR cluster, wait 14 minutes, fail with `AnalysisException: cannot resolve 'event_date'` — because the dev cluster reads a stale catalog snapshot. Repeat 6 times.
+3. Day 4: write the transform, submit to a dev EMR cluster (Amazon's managed Spark/Hadoop service), wait 14 minutes, fail with `AnalysisException: cannot resolve 'event_date'` — because the dev cluster reads a stale catalog snapshot. Repeat 6 times.
 4. Day 7: open a PR. CI flakes twice on an unrelated table's schema test. Reviewer asks "where's the data quality check?" — which no one documented as required.
-5. Day 9: merged. The Airflow DAG isn't wired to alerting because that's a separate, undocumented step. The first prod failure pages no one.
+5. Day 9: merged. The Airflow DAG (a DAG, or Directed Acyclic Graph, is a workflow definition in Airflow that describes the order jobs run in) isn't wired to alerting because that's a separate, undocumented step. The first prod failure pages no one.
 
 Nine days for a one-column change, and a silent monitoring gap shipped to prod. None of those nine days were spent on the actual business logic. That is the problem DevEx engineering solves: every step above is a removable friction point, and each one is measurable.
 
-The reason this matters at principal scope: friction is regressive. Senior engineers route around it (they have tribal knowledge, side-channel access, a working laptop from 2 years ago). New and mid-level engineers absorb the full cost. So bad DevEx silently lowers your effective hiring bar and your team's bus factor at the same time.
+The reason this matters at principal scope: friction is regressive. Senior engineers route around it (they have tribal knowledge, side-channel access, a working laptop from 2 years ago). New and mid-level engineers absorb the full cost. So bad DevEx silently lowers your effective hiring bar and your team's bus factor (the number of people who need to leave before critical knowledge is lost) at the same time.
 
 ## How it works
 
-DevEx is engineered across three loops with very different time constants. The discipline is knowing which loop a given pain lives in, because the fixes are different.
+DevEx is engineered across three loops with very different time constants (how long each loop takes). The discipline is knowing which loop a given pain lives in, because the fixes are different.
 
 ```mermaid
 flowchart LR
@@ -63,13 +63,13 @@ flowchart LR
     OBS -.incident feedback.-> E
 ```
 
-The governing equation is simple. If `N` is daily iterations and `L` is loop latency, the cost of a loop is `N × L` engineer-minutes, and the *value* of an optimization is `N × ΔL`. This is why the inner loop dominates: `N` is large (dozens per day) and `L` is the thing you can cut by 10×. Optimizing the outer loop (deploy takes 8 min vs 5 min) has low `N` and rarely moves the needle.
+The governing equation is simple. If `N` is daily iterations and `L` is loop latency, the cost of a loop is `N × L` engineer-minutes, and the *value* of an optimization is `N × ΔL` (delta-L, meaning the time you cut). This is why the inner loop dominates: `N` is large (dozens per day) and `L` is the thing you can cut by 10×. Optimizing the outer loop (deploy takes 8 min vs 5 min) has low `N` and rarely moves the needle.
 
 Two structural ideas underpin everything else:
 
-**Parity.** The artifact and its dependencies must be identical across local, CI, and prod. The mechanism is a single pinned image (`data-platform-base:2024.11`) plus a locked dependency set (`uv.lock` / `poetry.lock`), referenced by digest, not tag. The same Iceberg/Glue catalog client, the same Spark version, the same Python. When parity holds, a green local test is a real signal. When it doesn't, the inner loop produces false confidence — worse than no signal.
+**Parity.** The artifact and its dependencies must be identical across local, CI, and prod. The mechanism is a single pinned image (`data-platform-base:2024.11`) — a container image (a packaged, self-contained environment) locked to an exact version — plus a locked dependency set (`uv.lock` / `poetry.lock`), referenced by digest (a cryptographic hash of the exact image contents), not tag (a human-readable label that can point to different content over time). The same Iceberg/Glue catalog client, the same Spark version, the same Python. When parity holds, a green local test is a real signal. When it doesn't, the inner loop produces false confidence — worse than no signal.
 
-**Sampling with shape preservation.** You cannot run the inner loop on 4 TB. You run it on a deterministic sample that preserves schema and the distributions that matter (skew keys, nulls, late-arriving partitions). The sample is generated from prod with PII redaction and checked into a fixtures layer or a `dev` catalog namespace. Done right, a transform that passes on the sample passes on prod logic; only volume- and cost-related behavior (shuffle spill, AQE coalescing) is left for the mid/outer loops.
+**Sampling with shape preservation.** You cannot run the inner loop on 4 TB. You run it on a deterministic sample (the same sample every time, not random) that preserves schema and the distributions that matter (skew keys — values that appear far more often than others — nulls, late-arriving partitions). The sample is generated from prod with PII (Personally Identifiable Information) redaction and checked into a fixtures layer (a versioned set of test input files) or a `dev` catalog namespace. Done right, a transform that passes on the sample passes on prod logic; only volume- and cost-related behavior (shuffle spill, AQE coalescing — Adaptive Query Execution, Spark's runtime optimization that can merge small partitions) is left for the mid/outer loops.
 
 ## Deep dive
 
@@ -77,11 +77,11 @@ This is where data-platform DevEx diverges from generic SRE/platform advice, and
 
 ### The inner loop is the whole game, and Spark fights you on it
 
-The default Spark inner loop is hostile: JVM startup, executor allocation, S3 listing, and the fact that errors surface at *action* time, not at the line you wrote. Three things actually move it:
+The default Spark inner loop is hostile: JVM startup, executor allocation (Spark requesting compute resources), S3 listing, and the fact that errors surface at *action* time (when Spark actually runs the computation), not at the line you wrote. Three things actually move it:
 
-- **Run Spark in local mode against sampled Parquet/Iceberg in `pytest`.** `SparkSession.builder.master("local[2]")` with a 50–200 MB fixture starts in ~3–5 s and exercises Catalyst, the real DataFrame API, and your UDFs. This catches 80%+ of logic and schema bugs before any cluster. See [spark-internals/catalyst](../../spark-internals/catalyst/README.md) for why local mode reproduces the optimizer faithfully and [spark-internals/aqe](../../spark-internals/aqe/README.md) for what it does *not* reproduce (runtime skew handling).
-- **Make schema a fast-fail.** The most common 14-minute failure is a schema mismatch that's knowable in milliseconds. Load the contract (a `pydantic` model, an Iceberg schema, or a `.avsc`) and validate the DataFrame schema *before* you trigger the heavy action. Fail in the IDE, not on the cluster.
-- **Cache the warm session.** In a test suite, a session-scoped `SparkSession` fixture amortizes JVM startup across the whole file. Re-creating it per test turns a 20 s suite into a 4 min suite.
+- **Run Spark in local mode against sampled Parquet/Iceberg in `pytest`.** `SparkSession.builder.master("local[2]")` — local mode means Spark runs entirely on your laptop with no cluster — with a 50–200 MB fixture starts in ~3–5 s and exercises Catalyst (Spark's query optimizer), the real DataFrame API, and your UDFs (User Defined Functions — custom logic you write in Python). This catches 80%+ of logic and schema bugs before any cluster.
+- **Make schema a fast-fail.** The most common 14-minute failure is a schema mismatch (columns that don't match what the code expects) that's knowable in milliseconds. Load the contract (a `pydantic` model — a Python library for data validation — an Iceberg schema, or a `.avsc` Avro schema file) and validate the DataFrame schema *before* you trigger the heavy action. Fail in the IDE, not on the cluster.
+- **Cache the warm session.** In a test suite, a session-scoped `SparkSession` fixture (a `pytest` fixture with `scope="session"` means it's created once and shared across all tests in the file) amortizes JVM startup across the whole file. Re-creating it per test turns a 20 s suite into a 4 min suite.
 
 ### Error messages are an interface you own
 
@@ -100,18 +100,18 @@ This is not cosmetic. The difference between a 30-minute self-serve fix and a 3-
 
 Parity always breaks at the boundaries, and you should pre-empt each one:
 
-- **Catalog state.** Local tests use an isolated catalog (a temp Hadoop/Hive catalog or a per-PR Iceberg namespace). Sharing a dev catalog means two engineers' tests stomp on each other's schemas — the classic intermittent CI failure. Give every test run its own namespace, torn down after.
-- **Time and "now".** Pipelines that read `current_date()` or `CURRENT_TIMESTAMP` are non-deterministic and flake in CI at midnight UTC. Inject a logical execution date (`ds` / `logical_date`) everywhere; ban wall-clock reads in transforms.
-- **Credentials.** Prod uses IRSA/instance roles; laptops use SSO tokens; CI uses an OIDC-federated role. The *code* must not care — abstract behind a credential provider so the same code path runs in all three.
+- **Catalog state.** Local tests use an isolated catalog (a temp Hadoop/Hive catalog or a per-PR Iceberg namespace — a namespace is a logical grouping of tables, like a schema in a database). Sharing a dev catalog means two engineers' tests stomp on each other's schemas — the classic intermittent CI failure. Give every test run its own namespace, torn down after.
+- **Time and "now".** Pipelines that read `current_date()` or `CURRENT_TIMESTAMP` are non-deterministic (they produce different results depending on when they run) and flake in CI at midnight UTC. Inject a logical execution date (`ds` / `logical_date` — a parameter you pass in rather than reading the system clock) everywhere; ban wall-clock reads in transforms.
+- **Credentials.** Prod uses IRSA/instance roles (IAM Roles for Service Accounts — a way to grant a running workload AWS permissions without hardcoded keys); laptops use SSO tokens; CI uses an OIDC-federated role (a short-lived credential issued via identity federation). The *code* must not care — abstract behind a credential provider so the same code path runs in all three.
 - **Data volume behavior.** Sampled data hides skew, spill, and AQE coalescing. Be explicit that the inner loop validates *logic*, and that volume behavior is a mid-loop concern validated on a staging-scale dataset. Don't pretend the sample tests performance.
 
 ### Onboarding is the highest-signal benchmark you have
 
-`time-to-first-pipeline` — laptop unboxed to a merged, scheduled, monitored job — is the single best aggregate DevEx metric, because a new hire hits *every* friction point with zero tribal knowledge. Instrument it. Have each new engineer log timestamps at: environment ready, first local test green, first PR opened, first merge, first prod run, first alert configured. The longest gap is your next quarter's roadmap. The companion [self-service-platforms](../self-service-platforms/README.md) and [golden-paths](../golden-paths/README.md) chapters cover the scaffolding that compresses these gaps; this chapter is about *measuring* them so you know which to attack.
+`time-to-first-pipeline` — laptop unboxed to a merged, scheduled, monitored job — is the single best aggregate DevEx metric, because a new hire hits *every* friction point with zero tribal knowledge. Instrument it. Have each new engineer log timestamps at: environment ready, first local test green, first PR opened, first merge, first prod run, first alert configured. The longest gap is your next quarter's roadmap. The companion self-service-platforms and golden-paths chapters cover the scaffolding that compresses these gaps; this chapter is about *measuring* them so you know which to attack.
 
 ### The cost of context switching
 
-A 12-minute inner loop doesn't cost 12 minutes — it costs 12 minutes *plus* the re-immersion cost when the engineer's attention has wandered to Slack. Empirically, loops longer than ~3–4 minutes cause task-switching; loops under ~30 seconds keep flow. This is why cutting an inner loop from 12 min to 8 min feels like nothing, but cutting it from 8 min to 45 s is transformational. The threshold, not the linear reduction, is what matters.
+A 12-minute inner loop doesn't cost 12 minutes — it costs 12 minutes *plus* the re-immersion cost when the engineer's attention has wandered to Slack. Empirically, loops longer than ~3–4 minutes cause task-switching; loops under ~30 seconds keep flow (a state of focused, uninterrupted work). This is why cutting an inner loop from 12 min to 8 min feels like nothing, but cutting it from 8 min to 45 s is transformational. The threshold, not the linear reduction, is what matters.
 
 ## Worked example
 
@@ -190,11 +190,11 @@ jobs:
       - run: uv run dpctl contract check transforms/  # schema vs Iceberg catalog contract
 ```
 
-The scaffold a `dpctl new transform` command generates — the transform stub, the test with a sampled fixture, the DAG entry with alerting pre-wired — is what a [golden path](../golden-paths/README.md) provides. DevEx work is making sure that scaffold runs green in under a minute on a fresh checkout.
+The scaffold a `dpctl new transform` command generates — the transform stub, the test with a sampled fixture, the DAG entry with alerting pre-wired — is what a golden path (a paved, opinionated starting point that bakes in all the defaults a team has agreed on) provides. DevEx work is making sure that scaffold runs green in under a minute on a fresh checkout.
 
 ## Production patterns
 
-- **Ship a CLI, not a wiki.** `dpctl new transform`, `dpctl test --sample`, `dpctl access request`, `dpctl deploy --dry-run`. A CLI is testable, versionable, and discoverable (`--help`); a wiki rots. The CLI is the API to your platform; treat it like one.
+- **Ship a CLI, not a wiki.** `dpctl new transform`, `dpctl test --sample`, `dpctl access request`, `dpctl deploy --dry-run`. A CLI (Command Line Interface — a tool engineers run in their terminal) is testable, versionable, and discoverable (`--help`); a wiki rots. The CLI is the API to your platform; treat it like one.
 - **Per-PR ephemeral data namespaces.** Each PR gets an isolated Iceberg namespace (`pr_1234.*`) seeded from sampled prod, torn down on merge/close. Eliminates the "two PRs touched the same dev table" flake class entirely.
 - **Golden fixtures generated from prod, redacted, version-controlled.** A nightly job samples prod (stratified on skew keys and null patterns), redacts PII, and publishes a versioned fixture set. Tests pin a fixture version so a fixture refresh can't silently break CI.
 - **Error-message middleware.** A thin wrapper around job submission that pattern-matches the top N failure signatures and rewrites them with an actionable next step and a runbook link. Track which messages fire most; those are your next docs/automation targets.
@@ -214,7 +214,7 @@ The scaffold a `dpctl new transform` command generates — the transform stub, t
 | **Onboarding lives in tribal knowledge** | `time-to-first-pipeline` is 1–2 weeks; same setup questions per hire | `dpctl init`; measure the metric; attack the longest gap |
 | **DevEx with no metrics** | Platform team argues from anecdote; can't prioritize | Instrument inner-loop latency, CI false-failure rate, time-to-first-pipeline; review monthly |
 
-The most insidious failure is the **green-but-meaningless test suite**: parity has quietly drifted, so tests pass while prod behaves differently. The symptom is rising "passes locally, breaks in prod" tickets *despite* high test coverage. The fix is to treat parity drift as a P2 incident, not a chore — pin by digest and alert when the prod image and CI image diverge.
+The most insidious failure is the **green-but-meaningless test suite**: parity has quietly drifted, so tests pass while prod behaves differently. The symptom is rising "passes locally, breaks in prod" tickets *despite* high test coverage. The fix is to treat parity drift as a P2 incident (high-priority, not a chore) — pin by digest and alert when the prod image and CI image diverge.
 
 ## Decision guidance
 
@@ -222,10 +222,10 @@ The most insidious failure is the **green-but-meaningless test suite**: parity h
 |---|---|
 | Inner loop > 5 min and engineers submit to clusters to iterate | **Invest first.** Local-mode Spark + sampled fixtures. Highest ROI by far (large `N`). |
 | "Passes locally, fails in prod" tickets recurring | Fix **parity** before anything else; green tests are currently lying. |
-| Onboarding takes > 1 day to first merged pipeline | Build/measure **time-to-first-pipeline**; pair with [golden-paths](../golden-paths/README.md) scaffolding. |
+| Onboarding takes > 1 day to first merged pipeline | Build/measure **time-to-first-pipeline**; pair with golden-paths scaffolding. |
 | Same support questions repeat in Slack weekly | **Error-message middleware** + CLI; encode each repeated question as an actionable error or command. |
 | Small team (< 5), one product, low churn | Don't over-build. A good `Makefile`, pinned deps, and sampled fixtures may be enough; a full `dpctl` is premature. |
-| Many teams, polyglot, high churn | Full self-service platform — see [self-service-platforms](../self-service-platforms/README.md). DevEx tooling becomes a product with its own SLOs. |
+| Many teams, polyglot (multiple programming languages or frameworks), high churn | Full self-service platform — see the self-service-platforms chapter. DevEx tooling becomes a product with its own SLOs. |
 | Deploy is slow but iteration is fast | Lower priority. Outer-loop `N` is small; optimize only if deploys block releases. |
 
 The trap is optimizing the loop you can see (deploys, dashboards) instead of the loop that costs the most (inner iteration). Measure `N × L` per loop before choosing where to spend.
@@ -236,15 +236,15 @@ The trap is optimizing the loop you can see (deploys, dashboards) instead of the
 - "I optimize the inner loop first because `value = N × ΔL`, and the inner loop has the largest `N`. Cutting a 12-minute Spark-on-cluster loop to a 45-second local-mode loop changed how the team worked — it crossed the flow threshold, not just the linear one."
 - "Parity is a contract enforced by a digest-pinned image and locked deps. When parity drifts, green CI lies, so I alert on image divergence and treat drift as an incident."
 - "Error messages are an interface the platform team owns. We wrap the top failure signatures and rewrite them into one actionable line plus a runbook link; that's the difference between a 30-minute self-serve fix and a 3-hour escalation."
-- "Sampled fixtures validate logic, not volume. I'm explicit that skew and OOM are mid-loop concerns on staging-scale data — I don't let a green sampled test masquerade as a performance guarantee." (Ties to [spark-internals/skew-handling](../../spark-internals/skew-handling/README.md).)
+- "Sampled fixtures validate logic, not volume. I'm explicit that skew and OOM are mid-loop concerns on staging-scale data — I don't let a green sampled test masquerade as a performance guarantee."
 - On scope: "For a 4-person team I'd ship a Makefile and fixtures, not a CLI platform. DevEx investment scales with team count and churn, not with ambition."
 
 ## Further reading
 
-- [platform-engineering/golden-paths](../golden-paths/README.md) — the paved-road scaffolding that compresses the loops measured here.
-- [platform-engineering/self-service-platforms](../self-service-platforms/README.md) — when DevEx tooling becomes a product with its own SLOs.
-- [spark-internals/catalyst](../../spark-internals/catalyst/README.md) — why local-mode Spark faithfully reproduces optimizer behavior in the inner loop.
-- [spark-internals/aqe](../../spark-internals/aqe/README.md) and [spark-internals/skew-handling](../../spark-internals/skew-handling/README.md) — the volume-dependent behavior the inner loop cannot reproduce.
-- [observability/monitoring](../../observability/monitoring/README.md) — wiring alerting into the outer loop so a merged pipeline is actually watched.
+- platform-engineering/golden-paths — the paved-road scaffolding that compresses the loops measured here.
+- platform-engineering/self-service-platforms — when DevEx tooling becomes a product with its own SLOs.
+- spark-internals/catalyst — why local-mode Spark faithfully reproduces optimizer behavior in the inner loop.
+- spark-internals/aqe and spark-internals/skew-handling — the volume-dependent behavior the inner loop cannot reproduce.
+- observability/monitoring — wiring alerting into the outer loop so a merged pipeline is actually watched.
 - Nicole Forsgren, Jez Humble, Gene Kim — *Accelerate* (2018): the empirical link between lead time / deployment frequency and organizational performance.
 - Abi Noda et al. — *DevEx: What Actually Drives Productivity* (ACM Queue, 2023): feedback loops, cognitive load, and flow state as the three measurable dimensions of developer experience.

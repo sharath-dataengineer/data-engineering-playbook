@@ -4,14 +4,14 @@
 
 ## About This Chapter
 
-**What this is.** Data Vault 2.0 decomposes the warehouse integration layer into insert-only Hubs (business keys), Links (relationships), and Satellites (time-variant context). This chapter covers the hash-key and hashdiff mechanics that let every source load in parallel, the modeling discipline that makes a vault work, and the lakehouse tax you pay for it.
+**What this is.** Data Vault 2.0 is a way of organizing your data warehouse's integration layer (the layer that combines data from multiple sources before it reaches reports or dashboards). It breaks that layer into three types of insert-only tables: Hubs (which store business keys — the real-world identifiers your business uses, like a customer ID), Links (which store relationships between those keys), and Satellites (which store descriptive attributes that change over time). This chapter covers the hash-key and hashdiff mechanics that let every source load in parallel, the modeling discipline that makes a vault work, and the performance costs you pay for it on a modern lakehouse.
 
-**Who it's for.** Data engineers, data/ML engineers, platform/architecture leads, and engineers preparing for senior/staff data-engineering interviews.
+**Who it's for.** Mid-level data engineers, senior/staff data engineers, data/ML engineers, platform/architecture leads, and engineers preparing for senior/staff data-engineering interviews.
 
 **What you'll take away.** By the end you'll be able to:
-- Model Hubs, Links, and Satellites and use deterministic hash keys to remove load-time inter-table dependencies.
+- Model Hubs, Links, and Satellites and use deterministic hash keys (surrogate keys computed by hashing a business key, so any loader can generate the same key without a central lookup) to remove load-time dependencies between tables.
 - Split satellites by rate of change, source, and classification, and handle effectivity satellites, driving keys, ghost records, and bi-temporal load-vs-applied time.
-- Implement append + MERGE-on-hashdiff loaders on Iceberg and build PIT tables that turn as-of subqueries into cheap equi-joins.
+- Implement append + MERGE-on-hashdiff (insert a new row only when content has changed) loaders on Iceberg and build PIT (point-in-time) tables that turn expensive as-of subqueries into cheap equi-joins.
 - Judge when a vault earns its 3-5x table fan-out versus when a star schema or one-big-table is the right call.
 
 ---
@@ -22,12 +22,12 @@
 - The model is built for **auditability and load concurrency**, not for query ergonomics. You do not report off the raw vault — you build star schemas / dimensional marts on top of it. Treat the vault as the integration layer, not the serving layer.
 - The hash-key design (HK = `sha256(business_key)`) is the load-time trick that removes inter-table dependencies: every loader can compute its own surrogate keys deterministically and write in any order, even out of sequence.
 - Satellites split by **rate of change and source system**, not by entity. A customer's address, marketing consent, and risk score belong in three different satellites because they change at different cadences and you want to avoid re-hashing 40 columns to detect that one changed.
-- On a lakehouse (Iceberg/Delta), the insert-only ethos maps cleanly to append + `MERGE`-on-hashdiff, but you pay for it in small-file proliferation and a fan-out of tables. Budget for compaction and expect 3-5x more physical tables than a dimensional model.
+- On a lakehouse (Iceberg/Delta), the insert-only approach maps cleanly to append + `MERGE`-on-hashdiff, but you pay for it in small-file proliferation and a fan-out of tables. Budget for compaction and expect 3-5x more physical tables than a dimensional model.
 - Use it when you have **many overlapping sources, hard audit/regulatory requirements, and a slowly-stabilizing model**. Do not reach for it on a single-source pipeline or a startup that rewrites its schema quarterly.
 
 ## Why this matters in production
 
-Picture the integration problem at Intuit: customer identity arrives from the sign-up service, the billing platform, the payroll product, and a CRM. Each emits a different "customer" with different keys, different update frequencies, and different SLAs. The CRM late-arrives by hours; billing is near-real-time off Kafka; payroll batches nightly.
+Picture the integration problem at a large company: customer identity arrives from the sign-up service, the billing platform, the payroll product, and a CRM. Each emits a different "customer" with different keys, different update frequencies, and different SLAs. The CRM arrives late by hours; billing is near-real-time off Kafka; payroll batches nightly.
 
 In a classic dimensional model you'd merge these into one conformed `dim_customer`. That merge becomes a single chokepoint: every source has to agree on the surrogate key, loads serialize, and any schema change to one source forces a regression test of the whole dimension. When a source adds a column or a new system shows up, you're doing surgery on a table that 200 reports depend on.
 
@@ -51,8 +51,8 @@ The four standard columns on every raw-vault row:
 
 - `*_hk` — the hash key, `sha256(upper(trim(business_key)))`, the surrogate.
 - `load_dts` — load timestamp, set by the loader, the time-variant axis on satellites.
-- `record_source` — provenance string, e.g. `billing.kafka.customer_v3`.
-- `hashdiff` (satellites only) — `sha256` over all descriptive columns, used to detect change without comparing column-by-column.
+- `record_source` — provenance string (where the data came from), e.g. `billing.kafka.customer_v3`.
+- `hashdiff` (satellites only) — `sha256` over all descriptive columns, used to detect whether anything changed without comparing column-by-column.
 
 ```mermaid
 erDiagram
@@ -88,11 +88,11 @@ erDiagram
 
 ### The hash-key insight
 
-The reason loads can run in any order: the hub hash key is a **pure function of the business key**. The billing loader and the CRM loader, running on separate Spark jobs at different times, both compute `customer_hk = sha256(upper(trim(realm_id)))` and get the same value. Neither needs to look up a sequence from the other. A satellite can be written before its hub row exists (referential integrity is "eventually consistent" within the load window), and the hub `MERGE` simply de-dupes on the same key. This is what kills the load serialization that dimensional models suffer from.
+The reason loads can run in any order is that the hub hash key is a **pure function of the business key** — given the same input, it always produces the same output. The billing loader and the CRM loader, running on separate Spark jobs at different times, both compute `customer_hk = sha256(upper(trim(realm_id)))` and get the same value. Neither needs to look up a sequence number from a central table or wait for the other job. A satellite can even be written before its hub row exists (referential integrity — the guarantee that every foreign key points to a valid parent — is "eventually consistent" within the load window), and the hub `MERGE` simply de-duplicates on the same key. This is what eliminates the load serialization that dimensional models suffer from.
 
 ### Change detection via hashdiff
 
-A satellite gets a new row only when the descriptive content changes. Instead of `WHERE a.col1 <> b.col1 OR a.col2 <> b.col2 OR ... (n columns)` — which is verbose, NULL-fragile, and slow — you compute one `hashdiff` over the concatenated, normalized payload and compare a single 64-char string:
+A satellite gets a new row only when the descriptive content changes. Instead of comparing each column individually — `WHERE a.col1 <> b.col1 OR a.col2 <> b.col2 OR ... (n columns)` — which is verbose, fragile when values are NULL, and slow — you compute one `hashdiff` over the concatenated, normalized payload and compare a single 64-character string:
 
 ```
 hashdiff = sha256(
@@ -101,7 +101,7 @@ hashdiff = sha256(
 )
 ```
 
-If the incoming `hashdiff` differs from the latest stored `hashdiff` for that `customer_hk`, insert a new satellite row. Otherwise it's a no-op. The `||` delimiter and the `^^` null-token matter: without them `('ab', null)` and `('a', 'b')` collide.
+If the incoming `hashdiff` differs from the latest stored `hashdiff` for that `customer_hk`, insert a new satellite row. Otherwise it's a no-op (do nothing). The `||` delimiter and the `^^` null-token matter: without them the values `('ab', null)` and `('a', 'b')` would hash to the same result, creating a false "no change" signal.
 
 ## Deep dive
 
@@ -112,37 +112,37 @@ This is where teams get it wrong. The mechanics are simple; the modeling discipl
 The naive move is one satellite per hub. Don't. Split satellites by **(rate of change × source system × classification)**:
 
 - **Rate of change.** A customer's `last_login_ts` changes daily; their `legal_name` changes once a decade. Put them in the same satellite and every login forces a re-hash and a new row carrying the unchanged name. You bloat the table and your hashdiff churns constantly. Separate fast-moving and slow-moving attributes.
-- **Source system.** Never co-mingle attributes from two sources in one satellite — you lose clean provenance and you couple two loaders. One source one satellite is the default.
-- **Classification.** PII, payment data, and consent flags often have different retention and access rules. Splitting them lets you apply column-masking and retention at the table grain instead of column ACLs everywhere.
+- **Source system.** Never combine attributes from two sources in one satellite — you lose clean provenance (the record of where data came from) and you couple two loaders together. One source, one satellite is the default.
+- **Classification.** PII (personally identifiable information), payment data, and consent flags often have different retention and access rules. Splitting them lets you apply column-masking and retention at the table level instead of managing column-level access controls everywhere.
 
 A practical heuristic: if two columns don't change together more than ~80% of the time, they probably want different satellites.
 
 ### 2. The driving-key / effectivity-satellite trap
 
-Links are insert-only and capture *that* a relationship existed, never *that it ended*. So how do you model "this account moved from customer A to customer B"? You add an **effectivity satellite** on the link. The subtlety is the **driving key**: the side of the relationship that's stable. For "an account has one owning customer at a time," the account is the driving key. The effectivity sat is closed out (a new row with the prior `load_dts` and a logical end) when a new link row appears for the same driving key. Get the driving key wrong and you either never close relationships (cartesian growth) or you close the wrong ones (you'll see accounts flicker between owners). Symptom in prod: a point-in-time join returns two "active" owners for one account.
+Links are insert-only and capture *that* a relationship existed, never *that it ended*. So how do you model "this account moved from customer A to customer B"? You add an **effectivity satellite** on the link. The subtlety is the **driving key**: the side of the relationship that's stable (i.e., the entity that "owns" the relationship at any point in time). For "an account has one owning customer at a time," the account is the driving key. The effectivity satellite is closed out (a new row is written with the prior `load_dts` and a logical end flag) when a new link row appears for the same driving key. Get the driving key wrong and you either never close relationships (causing unbounded row growth) or you close the wrong ones (you'll see accounts flicker between owners). Symptom in prod: a point-in-time join returns two "active" owners for one account.
 
 ### 3. Same-as / hierarchical links
 
 Two specializations people forget:
 
-- **Same-as link (SAL):** maps multiple business keys that turn out to be the same real-world entity (master-data resolution — `realm_id` and a legacy `customer_no` are the same person). You keep both hubs intact and express the equivalence in a link, rather than destructively merging keys you might later un-merge.
-- **Hierarchical link:** a self-referencing link on one hub (org chart, account-of-account). It's a normal link with two FKs to the same hub.
+- **Same-as link (SAL):** maps multiple business keys that turn out to be the same real-world entity (master-data resolution — for example, a `realm_id` and a legacy `customer_no` that represent the same person). You keep both hubs intact and express the equivalence in a link, rather than destructively merging keys you might later need to un-merge.
+- **Hierarchical link:** a self-referencing link on one hub (for example, an org chart or an account-of-account structure). It's a normal link with two foreign keys pointing to the same hub.
 
 ### 4. NULL business keys and the ghost-record
 
-Links and PIT joins break on NULLs. Standard practice: insert a **ghost/zero record** into every hub — `customer_hk = sha256('')` or a sentinel of 64 zeros — so downstream left joins against a missing key resolve to a real row instead of dropping it. Forget this and your dimensional marts silently lose fact rows whose key didn't arrive yet.
+Links and PIT joins break when a key is NULL. Standard practice: insert a **ghost/zero record** (a placeholder row with a sentinel key) into every hub — `customer_hk = sha256('')` or a sentinel of 64 zeros — so downstream left joins against a missing key resolve to a real row instead of silently dropping it. Forget this and your dimensional marts will quietly lose fact rows whose key hadn't arrived yet.
 
 ### 5. Load timestamp vs. applied timestamp — two different times
 
-`load_dts` is when *you* loaded the row. The business event time (`effective_from`) is a different column that lives in the satellite payload. Conflating them is the classic bug: you reorder history by ingestion order instead of event order. For late-arriving data you need bi-temporal awareness — `load_dts` for audit ("when did the warehouse learn this") and `applied_ts` for business reporting ("when was this true"). PIT tables should snapshot on the business date, not the load date.
+`load_dts` is when *you* loaded the row into the warehouse. The business event time (`effective_from`) is a different concept — it belongs in the satellite payload as a separate column. Conflating them is a classic bug: you end up reordering history by ingestion order instead of the actual order events happened. For late-arriving data (data that shows up in your pipeline hours or days after the event occurred) you need bi-temporal awareness — `load_dts` for audit ("when did the warehouse learn this") and `applied_ts` for business reporting ("when was this true"). PIT tables should snapshot on the business date, not the load date.
 
 ### 6. On a lakehouse: append-only meets MERGE
 
-Pure insert-only is the ideal, but on Iceberg/Delta you implement the "insert if changed" with `MERGE INTO ... WHEN NOT MATCHED THEN INSERT`. Three operational realities:
+Pure insert-only is the ideal, but on Iceberg/Delta you implement the "insert if changed" pattern with `MERGE INTO ... WHEN NOT MATCHED THEN INSERT`. Three operational realities:
 
-- **Small files.** Each micro-batch appends a few rows per satellite across dozens of satellites. You will generate thousands of <1 MB files an hour. Schedule Iceberg `rewrite_data_files` (target 256-512 MB) and `rewrite_manifests`; on Delta run `OPTIMIZE`. See [../../lakehouse/iceberg/README.md](../../lakehouse/iceberg/README.md) for compaction tuning.
-- **MERGE cost.** A satellite `MERGE` keyed on `(hk)` matching only the *current* row needs a pre-filtered target (latest-row-per-hk view) or it scans the whole table. Partition satellites by `load_dts` date and use Iceberg hidden partitioning so the merge only touches recent partitions.
-- **Hash collisions.** SHA-256 collision risk is negligible (~10⁻⁶⁰ at trillions of keys). MD5, still common in legacy DV tooling, is *not* safe at scale — switch to SHA-256. The storage delta (32 vs 16 bytes) is noise next to the payload.
+- **Small files.** Each micro-batch appends a few rows per satellite across dozens of satellites. You will generate thousands of files smaller than 1 MB per hour. Schedule Iceberg `rewrite_data_files` (target 256-512 MB) and `rewrite_manifests`; on Delta run `OPTIMIZE`. See the sibling Iceberg chapter for compaction tuning.
+- **MERGE cost.** A satellite `MERGE` keyed on `(hk)` that only needs to match the *current* row needs a pre-filtered target (a view of just the latest row per hash key) or it will scan the whole table. Partition satellites by `load_dts` date and use Iceberg hidden partitioning so the merge only touches recent partitions.
+- **Hash collisions.** A hash collision is when two different inputs produce the same hash output. SHA-256 collision risk is negligible (~10⁻⁶⁰ at trillions of keys). MD5, still common in legacy DV tooling, is *not* safe at scale — switch to SHA-256. The storage difference (32 vs 16 bytes per key) is noise next to the payload size.
 
 ## Worked example
 
@@ -218,16 +218,16 @@ CROSS JOIN (SELECT explode(sequence(
               date'2026-01-01', date'2026-06-18', interval 1 day)) AS snapshot_date) d;
 ```
 
-A mart then equi-joins `pit_customer` to each satellite on `(customer_hk, *_load_dts)` — turning what would be n correlated as-of subqueries into n cheap equi-joins. That's the whole point of the PIT.
+A mart then equi-joins `pit_customer` to each satellite on `(customer_hk, *_load_dts)` — turning what would be n correlated as-of subqueries (expensive queries that ask "what was the value at this point in time?") into n cheap equi-joins (simple equality matches). That's the whole point of the PIT.
 
 ## Production patterns
 
-- **Two-tier vault: raw + business.** The raw vault is a faithful, un-opinionated copy of sources (no business rules). The **business vault** adds computed satellites, bridge tables, and applied rules. Keep them separate so you can rebuild business logic without re-ingesting raw — and so audit always has the untouched raw layer.
-- **Hash everything at the staging boundary, once.** Compute all `*_hk` and `hashdiff` values in the staging job and carry them downstream. Re-hashing in multiple jobs invites drift (someone trims, someone doesn't) and silent split-brain.
-- **Standardize the normalization function.** Publish one shared `HASH()` UDF/macro (upper, trim, `^^` null token, `||` delimiter) and forbid ad-hoc hashing. A single inconsistent loader poisons key matching forever — and you can't tell from the data.
-- **Partition satellites by `load_dts` date; partition hubs not at all** (they're small and key-lookup dominated). Keeps MERGE pruning tight on the high-churn tables.
-- **Automate the boilerplate.** DV is template-heavy — hub/link/sat loaders are 90% identical. Generate them from metadata (dbtvault, AutomateDV, or homegrown Jinja). Hand-writing 200 loaders is how you get the inconsistent-hashing bug above.
-- **Serve dimensional marts, not the vault.** Build star schemas on top for BI. See [../star-schema/README.md](../star-schema/README.md) and use [../scd-types/README.md](../scd-types/README.md) logic when collapsing satellites into Type-2 dimensions — the satellite *is* effectively a Type-2 history you flatten on read.
+- **Two-tier vault: raw + business.** The raw vault is a faithful, un-opinionated copy of sources (no business rules applied). The **business vault** adds computed satellites, bridge tables, and applied business rules. Keep them separate so you can rebuild business logic without re-ingesting raw data — and so audit always has the untouched raw layer to point to.
+- **Hash everything at the staging boundary, once.** Compute all `*_hk` and `hashdiff` values in the staging job and carry them downstream. Re-hashing in multiple jobs invites drift (one job trims whitespace, another doesn't) and silent split-brain (the same business key produces two different hash keys in two different places).
+- **Standardize the normalization function.** Publish one shared `HASH()` UDF (user-defined function) or macro — using upper, trim, `^^` null token, and `||` delimiter — and forbid ad-hoc hashing elsewhere. A single inconsistent loader poisons key matching permanently, and you can't detect it from the data alone.
+- **Partition satellites by `load_dts` date; partition hubs not at all** (hubs are small and key-lookup dominated). Keeping satellites partitioned by date ensures MERGE operations only scan recent partitions on the high-churn tables.
+- **Automate the boilerplate.** Data Vault is template-heavy — hub/link/satellite loaders are 90% identical. Generate them from metadata using a templating tool (dbtvault, AutomateDV, or a homegrown Jinja template). Hand-writing 200 loaders is how you get the inconsistent-hashing bug above.
+- **Serve dimensional marts, not the vault.** Build star schemas on top for BI. See the sibling star-schema and SCD-types chapters — the satellite is effectively a Type-2 history table (one that tracks all historical values over time) that you flatten on read.
 
 ## Anti-patterns & failure modes
 
@@ -248,26 +248,26 @@ A mart then equi-joins `pit_customer` to each satellite on `(customer_hk, *_load
 |---|---|---|
 | Many overlapping sources, heavy integration churn, audit/regulatory mandate | **Data Vault** (raw + business vault), marts on top | Parallel loads, additive source onboarding, full lineage |
 | Single source, stable schema, BI is the only consumer | **Dimensional / star schema** directly | Vault overhead (3-5x tables, downstream complexity) buys you nothing here |
-| Operational app store, low-latency point reads | **3NF / normalized OLTP** | Vault is an analytical integration pattern, not a serving store |
-| Need history on a few dimensions only | **SCD Type 2** in a star schema | Don't adopt full DV just to track history — see [../scd-types/README.md](../scd-types/README.md) |
+| Operational app store, low-latency point reads | **3NF / normalized OLTP** (a normalized relational model optimized for writes and lookups) | Vault is an analytical integration pattern, not a serving store |
+| Need history on a few dimensions only | **SCD Type 2** (slowly changing dimension Type 2 — a pattern that tracks row history with effective dates) in a star schema | Don't adopt full DV just to track history |
 | Fast-moving startup, schema rewritten quarterly | **Wide tables / one-big-table on lakehouse** | DV's payoff is amortized over years of model stability you don't have yet |
-| Cross-domain unified customer view | **Vault for integration, then a `customer_360` mart** | See [../customer-360/README.md](../customer-360/README.md) |
+| Cross-domain unified customer view | **Vault for integration, then a `customer_360` mart** | See the sibling customer-360 chapter |
 
 Rule of thumb: Data Vault earns its keep when **integration complexity and auditability** dominate, and the model is stabilizing over years. If your pain is query performance or BI ergonomics, the vault is the wrong layer to be optimizing — fix the marts.
 
 ## Interview & architecture-review talking points
 
 - "Data Vault optimizes for **load concurrency and auditability**, deliberately at the expense of query ergonomics. We never report off the raw vault — it's the integration layer; we serve dimensional marts on top." This framing alone separates people who've run a vault from people who've read about one.
-- On *why* loads parallelize: "Hash keys are pure functions of business keys, so every loader computes its own surrogates deterministically and writes in any order. There's no central sequence to serialize on." That's the core mechanical insight.
-- On satellite design: "We split satellites by rate of change and source so a daily-changing attribute doesn't rewrite a decade-stable one, and so each source has clean, decoupled provenance." Mention the ~80%-change-together heuristic.
-- On the lakehouse adaptation: "Insert-only becomes append + MERGE-on-hashdiff on Iceberg. The real operational tax is small files and MERGE planning, so we partition satellites by load date and schedule compaction — budget for it up front, don't discover it in an incident."
+- On *why* loads parallelize: "Hash keys are pure functions of business keys, so every loader computes its own surrogates deterministically and writes in any order. There's no central sequence table to serialize on." That's the core mechanical insight.
+- On satellite design: "We split satellites by rate of change and source so a daily-changing attribute doesn't force a rewrite of a decade-stable one, and so each source has clean, decoupled provenance." Mention the ~80%-change-together heuristic.
+- On the lakehouse adaptation: "Insert-only becomes append + MERGE-on-hashdiff on Iceberg. The real operational tax is small files and MERGE planning time, so we partition satellites by load date and schedule compaction — budget for it up front, don't discover it in an incident."
 - On when *not* to use it: be ready to say no. "Single source, stable schema — I'd go straight to a star schema. DV's 3-5x table fan-out and downstream join complexity is a liability without integration churn to justify it." Showing the off-switch is what reads as principal-level.
 - Be ready to whiteboard the effectivity-satellite + driving-key for a transferable relationship — it's the question that distinguishes textbook knowledge from real modeling.
 
 ## Further reading
 
-- Sibling chapters: [../star-schema/README.md](../star-schema/README.md) · [../snowflake-schema/README.md](../snowflake-schema/README.md) · [../scd-types/README.md](../scd-types/README.md) · [../customer-360/README.md](../customer-360/README.md)
-- Lakehouse mechanics this chapter leans on: [../../lakehouse/iceberg/README.md](../../lakehouse/iceberg/README.md) · [../../lakehouse/delta/README.md](../../lakehouse/delta/README.md)
-- Data quality on a vault: [../../data-quality/reconciliation/README.md](../../data-quality/reconciliation/README.md)
+- Sibling chapters: star-schema, snowflake-schema, scd-types, customer-360 (within this playbook)
+- Lakehouse mechanics this chapter leans on: the Iceberg and Delta chapters (within this playbook)
+- Data quality on a vault: the reconciliation chapter (within this playbook)
 - Dan Linstedt & Michael Olschimke, *Building a Scalable Data Warehouse with Data Vault 2.0* (Morgan Kaufmann, 2015) — the canonical reference, including the hash-key and hashdiff conventions.
-- AutomateDV (formerly dbtvault) docs — the de-facto open templating layer for DV loaders: https://automate-dv.readthedocs.io
+- AutomateDV (formerly dbtvault) — the widely used open-source templating layer for DV loaders; search for it by name.

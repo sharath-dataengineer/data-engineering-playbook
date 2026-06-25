@@ -4,13 +4,13 @@
 
 ## About This Chapter
 
-**What this is.** Delta Lake is an ACID table format built on Parquet plus an ordered transaction log. This chapter covers how that log drives every guarantee, how `MERGE` and small-file accumulation drive cost, and how to wire `OPTIMIZE`, deletion vectors, and `VACUUM` into a table's lifecycle.
+**What this is.** Delta Lake is an ACID (Atomicity, Consistency, Isolation, Durability — the four properties that guarantee database reliability) table format built on Parquet (a columnar file format) plus an ordered transaction log. This chapter covers how that log drives every guarantee, how `MERGE` (a SQL operation that inserts, updates, or deletes rows in one pass) and small-file accumulation drive cost, and how to wire `OPTIMIZE`, deletion vectors, and `VACUUM` into a table's lifecycle.
 
-**Who it's for.** Data engineers, data/ML engineers, platform/architecture leads, and engineers preparing for senior/staff data-engineering interviews.
+**Who it's for.** Mid-level data engineers, data/ML engineers, platform/architecture leads, and engineers preparing for senior/staff data-engineering interviews.
 
 **What you'll take away.** By the end you'll be able to:
 - Reason about the `_delta_log`, checkpoints, and optimistic-concurrency commit protocol as the source of truth for a table.
-- Design partitioning, clustering, and deletion vectors so `MERGE` and CDC stay cheap instead of rewriting whole files.
+- Design partitioning, clustering, and deletion vectors so `MERGE` and CDC (Change Data Capture — tracking row-level inserts, updates, and deletes from a source system) stay cheap instead of rewriting whole files.
 - Manage log/file retention, `VACUUM`, and protocol-feature upgrades without self-inflicting `FileNotFoundException` or locking out external readers.
 
 ---
@@ -18,27 +18,27 @@
 ## TL;DR
 
 - Delta Lake is an ACID table format built on Parquet plus an ordered **transaction log** (`_delta_log/`). The log — not the files on disk — is the source of truth for what a table contains at any version.
-- Concurrency is **optimistic** with a single serialization point: writers commit by atomically creating `NNNNN.json`. Conflicts are detected at commit time and resolved by isolation level (`WriteSerializable` by default, not full `Serializable`).
-- The expensive operations are not your writes — they are the **read-amplification from small files** and the **listing/log-replay cost** as the table accumulates thousands of commits. `OPTIMIZE`, checkpointing, and `VACUUM` exist to bound those.
+- Concurrency is **optimistic** (writers proceed without locking, then check for conflicts at the end) with a single serialization point: writers commit by atomically creating `NNNNN.json`. Conflicts are detected at commit time and resolved by isolation level (`WriteSerializable` by default, not full `Serializable`).
+- The expensive operations are not your writes — they are the **read-amplification from small files** (each tiny file adds overhead when reading) and the **listing/log-replay cost** as the table accumulates thousands of commits. `OPTIMIZE`, checkpointing, and `VACUUM` exist to bound those.
 - `MERGE` is the workhorse for CDC and upserts, and it is also where most teams burn money: a naive merge rewrites whole files. Partition pruning, deletion vectors, and `OPTIMIZE ZORDER` are the levers that keep it cheap.
 - Delta is deeply co-designed with Spark and the Databricks runtime. Off-Databricks (OSS Delta, delta-rs, Trino, Flink) you get a real but lagging subset — feature parity is a per-version negotiation, not a given.
-- The cross-engine question (Delta vs [Iceberg](../iceberg/README.md) vs [Hudi](../hudi/README.md)) is increasingly answered by **UniForm**, which writes Iceberg/Hudi metadata alongside Delta so one set of data files serves multiple readers.
+- The cross-engine question (Delta vs Iceberg vs Hudi) is increasingly answered by **UniForm**, which writes Iceberg/Hudi metadata alongside Delta so one set of data files serves multiple readers.
 
 ## Why this matters in production
 
-You have a `fact_transactions` table landing 40–60M rows/day from Kafka via Structured Streaming. Micro-batches commit every 30 seconds. Within three weeks you have ~60,000 tiny Parquet files (each a few MB), a `_delta_log/` with 60k+ commit JSONs, and analysts complaining that a `SELECT ... WHERE txn_date = current_date()` that used to return in 4 seconds now takes 90.
+You have a `fact_transactions` table landing 40–60M rows/day from Kafka via Structured Streaming. Micro-batches (small, frequent processing cycles) commit every 30 seconds. Within three weeks you have ~60,000 tiny Parquet files (each a few MB), a `_delta_log/` with 60k+ commit JSONs, and analysts complaining that a `SELECT ... WHERE txn_date = current_date()` that used to return in 4 seconds now takes 90.
 
 Nothing is "broken." Every write succeeded, every read is correct. What degraded is **metadata and I/O efficiency**:
 
 - The driver must list and replay thousands of log entries to reconstruct the current snapshot before any query planning happens.
-- The executors open tens of thousands of file handles, each with Parquet footer overhead, to read a day's data that should fit in a handful of 256 MB files.
+- The executors open tens of thousands of file handles, each with Parquet footer overhead (the metadata section at the end of each Parquet file), to read a day's data that should fit in a handful of 256 MB files.
 - A nightly `MERGE` to apply late-arriving corrections rewrites entire partitions because the changed rows are scattered across all those small files.
 
 Delta gives you the primitives to fix this without re-architecting: `OPTIMIZE` to compact, log checkpoints to collapse replay cost, deletion vectors to avoid rewrites on updates/deletes, and `VACUUM` to reclaim storage. A principal engineer's job is to wire those into the lifecycle of the table so the 90-second regression never happens — not to discover it in a Sev2.
 
 ## How it works
 
-A Delta table is a directory containing data files (Parquet) and a `_delta_log/` directory holding an ordered sequence of commits. Each commit is a JSON file (`00000000000000000001.json`) containing **actions**: `add` (a new data file with stats), `remove` (tombstone a file), `metaData` (schema/partitioning), `protocol` (reader/writer feature versions), `commitInfo`, and `txn` (idempotency markers for streaming).
+A Delta table is a directory containing data files (Parquet) and a `_delta_log/` directory holding an ordered sequence of commits. Each commit is a JSON file (`00000000000000000001.json`) containing **actions**: `add` (a new data file with stats), `remove` (tombstone — mark as deleted without immediately deleting — a file), `metaData` (schema/partitioning), `protocol` (reader/writer feature versions), `commitInfo`, and `txn` (idempotency markers for streaming).
 
 The current state of the table = replay all actions from version 0 to N in order. To avoid replaying millions of actions, every 10 commits (configurable) Delta writes a **checkpoint** — a Parquet file summarizing the table state up to that version — plus a `_last_checkpoint` pointer. Readers load the latest checkpoint and replay only the JSON deltas after it.
 
@@ -64,7 +64,7 @@ flowchart TD
 3. Attempts to commit version `r+1` by atomically writing `(r+1).json`.
 4. If `(r+1).json` already exists (another writer won), it re-reads the new commits, checks whether their changes **conflict** with its own read/write set, and if not, retries the commit at `r+2`.
 
-The atomicity of step 3 depends on the storage layer offering a put-if-absent / mutual-exclusion primitive. On S3, which historically lacked this, Delta uses a `LogStore` implementation; on Databricks this is backed by a commit service, and OSS Delta on S3 multi-cluster needs DynamoDB-backed `S3DynamoDBLogStore` to be safe.
+The atomicity of step 3 depends on the storage layer offering a put-if-absent / mutual-exclusion primitive (a guarantee that only one writer can create a file at a given path). On S3, which historically lacked this, Delta uses a `LogStore` implementation; on Databricks this is backed by a commit service, and OSS Delta on S3 multi-cluster needs DynamoDB-backed `S3DynamoDBLogStore` to be safe.
 
 **Isolation.** The default is `WriteSerializable`: reads see a consistent snapshot, and concurrent blind appends (which don't read overlapping data) are allowed to commit without conflict even though a strict serializable history might reorder them. You can tighten to `Serializable` per table:
 
@@ -78,7 +78,7 @@ Conflict classes you will actually hit: `ConcurrentAppendException` (two writers
 
 ### File statistics and data skipping
 
-Every `add` action carries per-file stats: row count, and min/max/nullCount for the first `delta.dataSkippingNumIndexedCols` columns (default 32). The query planner uses these to **skip files** whose min/max range can't satisfy a predicate. This is why column order in the schema matters and why high-cardinality filter columns should be early. If you query on a column beyond index 32, you get zero skipping and full scans regardless of how well-clustered the data is.
+Every `add` action carries per-file stats: row count, and min/max/nullCount for the first `delta.dataSkippingNumIndexedCols` columns (default 32). The query planner uses these to **skip files** whose min/max range can't satisfy a predicate (a filter condition like `WHERE date = '2025-01-01'`). This is why column order in the schema matters and why high-cardinality filter columns (columns with many distinct values, like user IDs or timestamps) should be early. If you query on a column beyond index 32, you get zero skipping and full scans regardless of how well-clustered the data is.
 
 `ZORDER BY (col_a, col_b)` co-locates rows with similar values in the same files using a space-filling (Z-order) curve, tightening per-file min/max ranges so skipping prunes more aggressively. Z-ordering is multi-dimensional but degrades past ~3–4 columns. On Databricks, **Liquid Clustering** (`CLUSTER BY`) supersedes both partitioning and Z-order for most new tables — it clusters incrementally without full rewrites and lets you change keys without re-partitioning.
 
@@ -89,7 +89,7 @@ Every `add` action carries per-file stats: row count, and min/max/nullCount for 
 The killer detail: **the unit of rewrite is the file, not the row.** If your merge keys are scattered such that 200 changed rows land in 200 different 256 MB files, you rewrite ~50 GB to change 200 rows. Mitigations:
 
 - **Partition/cluster on the merge key** so changed rows concentrate in few files, and add the partition predicate to the `ON` clause so Phase 1 prunes (`ON t.dt = s.dt AND t.id = s.id`).
-- Enable **deletion vectors** (`delta.enableDeletionVectors = true`). Updates/deletes then write a compact bitmap of deleted row positions instead of rewriting the whole file — "merge-on-read." A later `OPTIMIZE` materializes the vectors. This turns a 50 GB rewrite into a few MB of DV writes.
+- Enable **deletion vectors** (`delta.enableDeletionVectors = true`). Updates/deletes then write a compact bitmap (a small binary structure that records which row positions are deleted) of deleted row positions instead of rewriting the whole file — "merge-on-read" (meaning the merge result is computed at read time, not write time). A later `OPTIMIZE` materializes the vectors. This turns a 50 GB rewrite into a few MB of DV writes.
 - For low-shuffle merge on Databricks, the runtime keeps unmodified rows in place rather than re-shuffling the whole file's contents.
 
 ### Deletion vectors change your mental model
@@ -105,15 +105,15 @@ There are two independent retention clocks people conflate:
 | Log retention | `delta.logRetentionDuration` | 30 days | How far back the commit history (time travel by version/timestamp) is kept |
 | Deleted-file retention | `delta.deletedFileRetentionDuration` | 7 days | How long tombstoned data files survive before `VACUUM` may delete them |
 
-`VACUUM` deletes data files no longer referenced by the current snapshot **and** older than `deletedFileRetentionDuration`. If you `VACUUM` with a shorter retention than your longest-running reader or your time-travel SLA, you get `FileNotFoundException` on snapshots that still reference those files — a classic self-inflicted outage. Never lower the threshold below your longest concurrent read.
+`VACUUM` deletes data files no longer referenced by the current snapshot **and** older than `deletedFileRetentionDuration`. If you `VACUUM` with a shorter retention than your longest-running reader or your time-travel SLA (Service Level Agreement — how far back users need to query historical versions), you get `FileNotFoundException` on snapshots that still reference those files — a classic self-inflicted outage. Never lower the threshold below your longest concurrent read.
 
 ### Schema evolution
 
-`mergeSchema` allows additive evolution (new columns, widening). It does **not** safely handle type narrowing or column renames by position. **Column mapping** (`delta.columnMapping.mode = 'name'`) decouples logical column names from physical Parquet names, enabling true renames and drops — but it's another protocol feature that older readers can't open. Streaming reads break on non-additive schema changes unless you provide a `schemaTrackingLocation`.
+`mergeSchema` allows additive evolution (new columns, widening — changing a column to a broader type, like `INT` to `BIGINT`). It does **not** safely handle type narrowing (changing to a more restrictive type) or column renames by position. **Column mapping** (`delta.columnMapping.mode = 'name'`) decouples logical column names from physical Parquet names, enabling true renames and drops — but it's another protocol feature that older readers can't open. Streaming reads break on non-additive schema changes unless you provide a `schemaTrackingLocation`.
 
 ## Worked example
 
-End-to-end CDC: stream Kafka into bronze, then a scheduled `MERGE` into a silver SCD-1 dimension, with the table configured for cheap merges.
+End-to-end CDC: stream Kafka into bronze (raw landing layer), then a scheduled `MERGE` into a silver (cleaned/conformed layer) SCD-1 dimension (Slowly Changing Dimension type 1 — overwrites old values rather than keeping history), with the table configured for cheap merges.
 
 ```python
 from pyspark.sql import SparkSession
@@ -209,7 +209,7 @@ The load-bearing choices: a **2-minute trigger** (not 30s) to cap commit/file co
 - **Bound the trigger interval to bound file count.** File count ≈ (commits) × (files per commit). A 30s trigger over a week is 20k commits before you've touched a row twice. Push to minutes and lean on `autoCompact`.
 - **Use `txnVersion`/`txnAppId` idempotency** for exactly-once into Delta from your own driver code, so a retried batch doesn't double-write. Structured Streaming does this for you via the checkpoint.
 - **Make protocol upgrades a reviewed decision.** Enabling deletion vectors, column mapping, or Liquid Clustering bumps reader/writer protocol versions and can lock out Trino, delta-rs, or older Spark. Inventory every consumer before flipping `delta.enableDeletionVectors` on a shared table.
-- **UniForm for multi-engine reads.** If Snowflake/BigQuery/Trino need Iceberg, set `delta.universalFormat.enabledFormats = 'iceberg'` rather than maintaining a parallel Iceberg copy. One set of Parquet files, two metadata layers. See [iceberg](../iceberg/README.md) and [metadata-layers](../metadata-layers/README.md).
+- **UniForm for multi-engine reads.** If Snowflake/BigQuery/Trino need Iceberg, set `delta.universalFormat.enabledFormats = 'iceberg'` rather than maintaining a parallel Iceberg copy. One set of Parquet files, two metadata layers.
 - **Z-order / cluster on the actual filter and join columns**, validated against `DESCRIBE HISTORY` skipping metrics — not on intuition.
 
 ## Anti-patterns & failure modes
@@ -230,8 +230,8 @@ The load-bearing choices: a **2-minute trigger** (not 30s) to cap commit/file co
 | Situation | Choose | Why |
 | --- | --- | --- |
 | Databricks-centric platform, Spark-heavy | **Delta** | Tightest runtime integration: Photon, Liquid Clustering, low-shuffle merge, predictive optimization |
-| Heavy multi-engine reads (Trino/Flink/Snowflake), open governance | [Iceberg](../iceberg/README.md) | Broadest engine support, hidden partitioning, mature REST catalog; or Delta + **UniForm** |
-| Streaming upserts with record-level indexes and incremental queries | [Hudi](../hudi/README.md) | Built around upsert/CDC with bloom/record indexes and MOR; though Delta DVs narrow the gap |
+| Heavy multi-engine reads (Trino/Flink/Snowflake), open governance | Iceberg | Broadest engine support, hidden partitioning, mature REST catalog; or Delta + **UniForm** |
+| Streaming upserts with record-level indexes and incremental queries | Hudi | Built around upsert/CDC with bloom/record indexes and MOR; though Delta DVs narrow the gap |
 | Need time travel + ACID on S3 with minimal vendor lock | Delta (OSS) or Iceberg | Both open; Delta on S3 needs the DynamoDB LogStore for safe multi-writer |
 | Simple append-only analytics, no updates | Plain Parquet + Hive/Glue, or any of the three | If you never update/delete, the format value is mostly metadata + skipping |
 
@@ -248,6 +248,6 @@ Rule of thumb: **on Databricks, default to Delta and reach for UniForm when anot
 
 ## Further reading
 
-- Sibling chapters: [Iceberg](../iceberg/README.md) · [Hudi](../hudi/README.md) · [Metadata Layers](../metadata-layers/README.md)
+- Sibling chapters: Iceberg · Hudi · Metadata Layers
 - Armbrust et al., *Delta Lake: High-Performance ACID Table Storage over Cloud Object Stores* (VLDB 2020) — the foundational paper on the transaction-log design.
 - Delta Lake protocol specification (`PROTOCOL.md`, delta-io/delta) — the authoritative definition of actions, checkpoints, and reader/writer features.

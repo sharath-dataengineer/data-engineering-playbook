@@ -4,14 +4,14 @@
 
 ## About This Chapter
 
-**What this is.** Reconciliation is proving that two representations of the same facts agree within a defined tolerance, and producing an auditable breakdown of exactly which rows and amounts disagree when they don't. This chapter covers the three-altitude comparison and the as-of semantics that make it reliable.
+**What this is.** Reconciliation is proving that two representations of the same facts agree within a defined tolerance (an acceptable margin of difference), and producing an auditable breakdown of exactly which rows and amounts disagree when they don't. This chapter covers the three-altitude comparison and the as-of semantics (how you pin both sides to the same point in time) that make it reliable.
 
-**Who it's for.** data engineers, analytics engineers, platform/architecture leads, engineering managers/tech leads, and engineers preparing for senior/staff data-engineering interviews.
+**Who it's for.** Mid-level data engineers, analytics engineers, platform/architecture leads, engineering managers/tech leads, and engineers preparing for senior/staff data-engineering interviews.
 
 **What you'll take away.** By the end you'll be able to:
 - Reconcile at three altitudes (row count, control totals, key-level full-outer diff) and descend to the expensive level only when needed.
-- Define typed, per-measure tolerance, pin both sides to a fixed cutoff/snapshot, and project to a common grain to eliminate false breaks.
-- Guard against the no-op pass with coverage assertions, and quarantine/attribute/age breaks as a first-class, queryable dataset.
+- Define typed, per-measure tolerance, pin both sides to a fixed cutoff/snapshot, and project to a common grain (the key set you group by) to eliminate false breaks.
+- Guard against the no-op pass (when a recon job quietly compares zero rows and reports success) with coverage assertions, and quarantine/attribute/age breaks as a first-class, queryable dataset.
 
 ---
 
@@ -21,25 +21,25 @@ Reconciliation is the discipline of proving that two representations of the same
 
 - **Reconciliation answers a question completeness and freshness can't: are the *values* correct end to end?** A pipeline can land 100% of rows, on time, and still be off by $4.2M because a currency conversion silently used stale FX rates.
 - **Reconcile at three altitudes:** row-count parity (cheapest), aggregate/control-total parity (catches arithmetic drift), and key-level diff (most expensive, only run on a failing aggregate or a sample). Don't pay for a full key-level diff on every run.
-- **Money reconciliation needs a tolerance model, not equality.** Floating-point, rounding rules, FX, and late-arriving corrections mean `sum(a) == sum(b)` is almost never literally true. Define absolute *and* relative tolerance, and reconcile on a **fixed cutoff watermark**, not "now".
+- **Money reconciliation needs a tolerance model, not equality.** Floating-point, rounding rules, FX (foreign exchange), and late-arriving corrections mean `sum(a) == sum(b)` is almost never literally true. Define absolute *and* relative tolerance, and reconcile on a **fixed cutoff watermark** (a timestamp both sides are pinned to), not "now".
 - **The hard part is not the diff — it's the grain and the as-of semantics.** Most false breaks come from comparing two systems captured at different points in time or rolled up to different keys.
 - **Breaks must be quarantined, attributed, and aged.** A reconciliation that only emits a pass/fail boolean is useless in an incident. You need the break records, a root-cause category, and a clock.
 - **Reconciliation is a control, so it must itself be tested.** A recon job that silently joins zero rows reports "100% match." Guard against the no-op pass.
 
 ## Why this matters in production
 
-Consider a payments platform. Events flow Kafka → Spark Structured Streaming → an Iceberg `transactions` table → a nightly batch that aggregates into a `daily_revenue` mart, which finance closes the books against. Four independent things can go wrong without any job failing:
+Consider a payments platform. Events flow Kafka → Spark Structured Streaming → an Iceberg `transactions` table → a nightly batch that aggregates into a `daily_revenue` mart (a pre-aggregated reporting table), which finance closes the books against. Four independent things can go wrong without any job failing:
 
-1. A Kafka consumer rebalance during a deploy double-delivers a window of events; the streaming job's dedupe key is `transaction_id` but a retry assigned a new id, so revenue is overstated by the retried slice.
+1. A Kafka consumer rebalance (when Kafka reassigns partitions across consumers during a rolling deploy) during a deploy double-delivers a window of events; the streaming job's dedupe key is `transaction_id` but a retry assigned a new id, so revenue is overstated by the retried slice.
 2. The FX enrichment service returns the previous day's rate for a 40-minute window during a cache miss; EUR transactions convert at a stale USD rate. Counts match. Amounts don't.
-3. A late schema change widens `amount` from `decimal(18,2)` to `decimal(38,2)`; a downstream `CAST` truncates fractional cents on millions of rows. Each row is off by less than a penny; the aggregate is off by thousands.
+3. A late schema change widens `amount` from `decimal(18,2)` to `decimal(38,2)`; a downstream `CAST` (type conversion) truncates fractional cents on millions of rows. Each row is off by less than a penny; the aggregate is off by thousands.
 4. A backfill reprocesses three days but the partition predicate is off-by-one, dropping one day. Row counts in the mart look plausible because another team's backfill added rows the same night.
 
-None of these trip a row-count check or a freshness SLO. All of them are caught by an amount-level reconciliation between `transactions` and the upstream payment processor's settlement file, run against a fixed end-of-day cutoff. This is why finance, fraud, and regulatory pipelines treat reconciliation as a **release-blocking control**, not a dashboard. See also the sibling chapters on [accuracy](../accuracy/README.md) and [completeness](../completeness/README.md) — reconciliation is where those two intersect.
+None of these trip a row-count check or a freshness SLO (service level objective). All of them are caught by an amount-level reconciliation between `transactions` and the upstream payment processor's settlement file, run against a fixed end-of-day cutoff. This is why finance, fraud, and regulatory pipelines treat reconciliation as a **release-blocking control**, not a dashboard.
 
 ## How it works
 
-Reconciliation is a controlled comparison between a **source of record** (system A, usually the authoritative upstream — a settlement file, an OLTP CDC stream, a ledger) and a **target** (system B, your derived store). The comparison happens at a chosen **grain** (the key set you group by) and a chosen **as-of point** (the watermark that defines "what counts").
+Reconciliation is a controlled comparison between a **source of record** (system A, usually the authoritative upstream — a settlement file, an OLTP CDC stream, a ledger) and a **target** (system B, your derived store). The comparison happens at a chosen **grain** (the key set you group by) and a chosen **as-of point** (the watermark — a timestamp — that defines "what counts").
 
 ```mermaid
 flowchart LR
@@ -57,15 +57,15 @@ flowchart LR
 
 **The three levels, formally.** Let `A` and `B` be the two datasets at grain `K` and cutoff `T`.
 
-- **Level 1 — cardinality:** `|A| == |B|`. O(scan), no join. Catches gross drops/dupes.
-- **Level 2 — control totals:** for each measure `m`, compare `Σ_A m` to `Σ_B m`. A pass requires:
+- **Level 1 — cardinality (row count):** `|A| == |B|`. O(scan) — requires only a full scan, no join. Catches gross drops/dupes.
+- **Level 2 — control totals:** For each measure `m`, compare the sum across A (`Σ_A m`) to the sum across B (`Σ_B m`). A pass requires:
 
   ```
   |Σ_A m − Σ_B m|  ≤  max( abs_tol,  rel_tol · |Σ_A m| )
   ```
 
-  Use absolute tolerance to absorb rounding (e.g. `abs_tol = $0.01 · expected_row_count` for penny rounding) and relative tolerance to absorb FX/precision noise (e.g. `rel_tol = 1e-9`). Equality (`tol = 0`) is a trap on anything involving division, FX, or floats.
-- **Level 3 — key-level diff:** a `FULL OUTER JOIN` on `K` partitions every key into four buckets:
+  Use absolute tolerance (a fixed dollar/unit floor) to absorb rounding (e.g. `abs_tol = $0.01 · expected_row_count` for penny rounding) and relative tolerance (a fraction of the total) to absorb FX/precision noise (e.g. `rel_tol = 1e-9`). Equality (`tol = 0`) is a trap on anything involving division, FX, or floats.
+- **Level 3 — key-level diff:** A `FULL OUTER JOIN` on `K` (joining both sides on every key, keeping rows that appear on only one side) partitions every key into four buckets:
 
   | Bucket | Condition | Meaning |
   |---|---|---|
@@ -74,9 +74,9 @@ flowchart LR
   | Missing in B | key in A only | dropped / not-yet-loaded |
   | Extra in B | key in B only | dupe / phantom / late |
 
-Level 3 is the expensive one (a shuffle join over both sides). The control flow above only descends to Level 3 when Level 1 or 2 fails, or on a scheduled sampled audit. This is the single most important cost decision in a recon design.
+Level 3 is the expensive one (a shuffle join — a distributed sort and merge across the cluster — over both sides). The control flow above only descends to Level 3 when Level 1 or 2 fails, or on a scheduled sampled audit. This is the single most important cost decision in a recon design.
 
-**As-of semantics.** Both sides must be captured at the *same logical cutoff* `T`, not the same wall-clock time. With Iceberg this is clean: pin both reads to a snapshot or timestamp so the comparison is reproducible and re-runnable.
+**As-of semantics.** Both sides must be captured at the *same logical cutoff* `T`, not the same wall-clock time. With Iceberg (the open table format used here) this is clean: pin both reads to a snapshot or timestamp so the comparison is reproducible and re-runnable.
 
 ```sql
 -- target side, pinned to a snapshot, not "live"
@@ -92,11 +92,11 @@ This is where reconciliations actually fail. The diff algorithm is trivial; the 
 
 The two systems almost never agree on grain. The settlement file is one row per *settlement batch*; your `transactions` table is one row per *authorization*. A single batch covers many auths; refunds and partial captures fan out. If you `FULL OUTER JOIN` on `transaction_id` you will get a screen full of "missing in B" that are not breaks at all — they're a grain you failed to roll up.
 
-**Fix:** explicitly define the reconciliation grain and project *both* sides to it before comparing. If A is at batch grain and B is at auth grain, roll B up to batch grain (or both to a coarser common key like `merchant_id × settlement_date × currency`). Write the grain into the recon config and assert it; never let it be implicit.
+**Fix:** Explicitly define the reconciliation grain and project *both* sides to it before comparing. If A is at batch grain and B is at auth grain, roll B up to batch grain (or both to a coarser common key like `merchant_id × settlement_date × currency`). Write the grain into the recon config and assert it; never let it be implicit.
 
 ### 2. Tolerance must be typed, not a single global epsilon
 
-A flat `rel_tol = 1e-6` is wrong for both ends of the spectrum. For a `$0.01` micro-transaction it's far too loose (a 1-cent break is 100% of value); for a `$50M` aggregate it's far too tight (sub-penny FP noise breaks it). Define tolerance per measure and let it be a function of magnitude:
+A flat `rel_tol = 1e-6` (a single small fraction applied to everything) is wrong for both ends of the spectrum. For a `$0.01` micro-transaction it's far too loose (a 1-cent break is 100% of value); for a `$50M` aggregate it's far too tight (sub-penny floating-point noise breaks it). Define tolerance per measure and let it be a function of magnitude:
 
 - **Counts / integers:** `abs_tol = 0`. Exact.
 - **Money:** `abs_tol = round_unit × expected_rows` for the rounding floor, plus `rel_tol` for FX. Reconcile in the *source currency* where possible and convert only for reporting — converting before reconciling bakes FX error into the comparison.
@@ -104,9 +104,9 @@ A flat `rel_tol = 1e-6` is wrong for both ends of the spectrum. For a `$0.01` mi
 
 ### 3. The no-op pass — the most dangerous failure mode
 
-If the join key is wrong, or a partition predicate eliminates all rows, or someone reconciles a table against itself, the job reports a perfect match over zero compared rows. This has caused more undetected production incidents than any actual mismatch, because it inverts the alarm: the control is green precisely when it's broken.
+If the join key is wrong, or a partition predicate (a filter that limits which partitions are read) eliminates all rows, or someone reconciles a table against itself, the job reports a perfect match over zero compared rows. This has caused more undetected production incidents than any actual mismatch, because it inverts the alarm: the control is green precisely when it's broken.
 
-**Fix:** assert a non-trivial minimum on `matched + mismatched` rows, and assert `coverage = matched_keys / max(|A|,|B|)` is above a floor (e.g. `> 0.95`). A recon that compared 12 rows when both sides have 40M is a *failed* recon, not a passing one.
+**Fix:** Assert a non-trivial minimum on `matched + mismatched` rows, and assert `coverage = matched_keys / max(|A|,|B|)` is above a floor (e.g. `> 0.95`). A recon that compared 12 rows when both sides have 40M is a *failed* recon, not a passing one.
 
 ### 4. Late-arriving data and the moving cutoff
 
@@ -118,7 +118,7 @@ Detecting that you're $4.2M off is 10% of the value. The other 90% is *which* di
 
 ### 6. Float vs decimal
 
-Never reconcile money as `double`. `0.1 + 0.2 != 0.3` and Spark's `sum()` over `double` accumulates order-dependent error that differs between the two engines you're comparing. Cast both sides to `decimal(38, 4)` (or the domain's native scale) *before* aggregating, and compare decimals. This single rule eliminates a whole class of phantom breaks.
+Never reconcile money as `double` (a floating-point number type). `0.1 + 0.2 != 0.3` in floating-point arithmetic, and Spark's `sum()` over `double` accumulates order-dependent error that differs between the two engines you're comparing. Cast both sides to `decimal(38, 4)` (a fixed-precision number type with 4 decimal places) *before* aggregating, and compare decimals. This single rule eliminates a whole class of phantom breaks.
 
 ## Worked example
 
@@ -191,15 +191,15 @@ assert coverage >= COVERAGE_FLOOR,        f"coverage {coverage:.3f} below floor"
        .write.format("iceberg").mode("append").save("db.recon_breaks"))
 ```
 
-The control-total status (Level 2) falls straight out: `total_delta = breaks.agg(F.sum("delta"))`, pass if within the rolled-up tolerance. The job is **idempotent and re-runnable** because both reads are pinned to `CUTOFF` — re-running it tomorrow against the same cutoff produces the same breaks.
+The control-total status (Level 2) falls straight out: `total_delta = breaks.agg(F.sum("delta"))`, pass if within the rolled-up tolerance. The job is **idempotent and re-runnable** (running it again produces the same result) because both reads are pinned to `CUTOFF` — re-running it tomorrow against the same cutoff produces the same breaks.
 
 ## Production patterns
 
 - **Tiered execution by cost.** Run Level 1 + Level 2 on every batch (cheap, no shuffle). Descend to Level 3 only on a Level-2 failure or on a scheduled sampled audit (e.g. 5% of keys hashed by `crc32(key) % 20 == 0`). A nightly full Level-3 over a billion-row settlement set should be the exception, gated behind a flag, not the default.
 - **Reconcile in source currency / source units.** Convert for reporting *after* reconciling. Folding FX in before the diff makes every FX hiccup look like a data bug.
-- **Break table is a first-class dataset.** Persist `db.recon_breaks` with `(run_cutoff, grain..., delta, category, detected_at, resolved_at, root_cause)`. Age open breaks; a `MISSING` break older than the late-arrival SLA auto-promotes from "timing" to "value." This table is what you query during an incident, not the logs.
-- **Reconcile at the boundary you can be held to.** If finance closes books off `daily_revenue`, reconcile `daily_revenue` against the processor, not the bronze table. Reconciling the wrong layer gives false confidence about the layer that actually matters.
-- **Two-sided freshness gate.** Before running, assert *both* sides are complete as of `T` (the settlement file fully landed; the target's [freshness](../freshness/README.md) watermark ≥ `T`). Reconciling against a half-loaded side manufactures breaks that resolve themselves an hour later and train people to ignore the alarm.
+- **Break table is a first-class dataset.** Persist `db.recon_breaks` with `(run_cutoff, grain..., delta, category, detected_at, resolved_at, root_cause)`. Age open breaks (track how long each break has been open); a `MISSING` break older than the late-arrival SLA auto-promotes from "timing" to "value." This table is what you query during an incident, not the logs.
+- **Reconcile at the boundary you can be held to.** If finance closes books off `daily_revenue`, reconcile `daily_revenue` against the processor, not the bronze table (the raw landing layer). Reconciling the wrong layer gives false confidence about the layer that actually matters.
+- **Two-sided freshness gate.** Before running, assert *both* sides are complete as of `T` (the settlement file fully landed; the target's freshness watermark ≥ `T`). Reconciling against a half-loaded side manufactures breaks that resolve themselves an hour later and train people to ignore the alarm.
 - **Tolerances and grain live in versioned config**, reviewed like code. A loosened tolerance is a risk decision and should show up in a diff with an owner.
 
 ## Anti-patterns & failure modes
@@ -224,9 +224,9 @@ The control-total status (Level 2) falls straight out: `total_delta = breaks.agg
 | Two streaming systems, sub-second | Don't reconcile live — reconcile closed windows (e.g. hourly tumbling) against a fixed cutoff |
 | Billion-row source, cost-sensitive | Tiered: L1+L2 always, L3 sampled by key hash; full L3 only on L2 failure |
 | Source has no stable key | Reconcile aggregates only (Level 2); key-level diff is meaningless without a grain |
-| Migration / table rebuild parity | Full Level-3 diff is justified one-time; this is the [accuracy](../accuracy/README.md) use case |
+| Migration / table rebuild parity | Full Level-3 diff is justified one-time; this is the accuracy use case |
 
-Reconciliation vs alternatives: a **schema/contract test** catches structure, not values. A **freshness check** catches lateness, not correctness. **Great Expectations / dbt tests** catch single-table invariants (nulls, ranges) but not cross-system agreement. Reconciliation is the only control that asserts *two systems agree on the facts* — reach for it precisely when "both sides exist and look fine individually" is not enough.
+Reconciliation vs alternatives: a **schema/contract test** catches structure, not values. A **freshness check** catches lateness, not correctness. **dbt tests** catch single-table invariants (nulls, ranges) but not cross-system agreement. Reconciliation is the only control that asserts *two systems agree on the facts* — reach for it precisely when "both sides exist and look fine individually" is not enough.
 
 ## Interview & architecture-review talking points
 
@@ -236,10 +236,3 @@ Reconciliation vs alternatives: a **schema/contract test** catches structure, no
 - "The control guards itself: I assert non-trivial coverage so a wrong join key or empty predicate fails the run instead of silently passing over zero rows. The no-op pass is the failure mode that actually burns you."
 - "Detection is 10%; attribution is 90%. The job emits the delta decomposed by dimension and persists break records with a category and a clock, so on-call sees 'the break is EUR, 14:00–14:40' instead of just a red light."
 - "I reconcile at the layer the business is held to — if finance closes off `daily_revenue`, that's what ties to the processor, not bronze."
-
-## Further reading
-
-- Sibling chapters: [accuracy](../accuracy/README.md) · [completeness](../completeness/README.md) · [freshness](../freshness/README.md)
-- Related: [lakehouse/iceberg](../../lakehouse/iceberg/README.md) (snapshot/time-travel reads for pinned cutoffs), [kafka/exactly-once](../../kafka/exactly-once/README.md) (the dedupe semantics that prevent count breaks upstream), [observability/monitoring](../../observability/monitoring/README.md) (alerting on the break table)
-- Repo skill: this playbook's companion `table-parity-check` automates the Level-3 column diff with a match-% report — the reusable form of the worked example above.
-- External: Apache Iceberg [time-travel & snapshot reads](https://iceberg.apache.org/docs/latest/spark-queries/#time-travel); Kleppmann, *Designing Data-Intensive Applications*, ch. 11 (stream/batch reprocessing and the "deriving and reconciling state" pattern).

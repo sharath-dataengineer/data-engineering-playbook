@@ -4,45 +4,45 @@
 
 ## About This Chapter
 
-**What this is.** A data-platform roadmap as a risk-and-capacity allocation document: sequencing work against shared, hard-to-fork infrastructure (one metastore, one Spark line, one Kafka cluster) where the wrong order causes two migrations instead of one.
+**What this is.** A data-platform roadmap treated as a risk-and-capacity allocation document. It sequences work against shared, hard-to-fork infrastructure — things like a single metastore (the central catalog that stores table definitions and metadata), one Spark version, one Kafka cluster — where choosing the wrong order forces you to do migrations twice instead of once.
 
-**Who it's for.** Platform/architecture leads, engineering managers/tech leads, data engineers, and engineers preparing for senior/staff data-engineering interviews.
+**Who it's for.** Mid-level data engineers, platform and architecture leads, engineering managers and tech leads, and engineers preparing for senior or staff data-engineering interviews.
 
 **What you'll take away.** By the end you'll be able to:
-- Sequence initiatives off a dependency DAG of platform primitives and score them on leverage vs blast radius, front-loading quick wins to earn the slack for big bets.
+- Sequence initiatives off a dependency DAG (Directed Acyclic Graph — a diagram of tasks where each task points to the things it must happen before, with no circular loops) of platform primitives, and score them on leverage vs blast radius, front-loading quick wins to earn the slack for big bets.
 - Commit to capacity-bounded Now/Next/Later bands with testable exit criteria and written kill conditions instead of calendar dates.
-- Budget the migration long-tail as a power law, reserve 20–30% for keep-the-lights-on, and treat the slowest consumer cutover as the real critical path.
+- Budget the migration long-tail as a power law (where a small number of difficult tables take a disproportionately large share of the effort), reserve 20–30% for keep-the-lights-on work, and treat the slowest consumer cutover as the real critical path.
 
 ---
 
-A roadmap is not a list of features with quarters next to them. For a data platform it is a **risk-and-capacity allocation document** that answers one question for an executive who can't read a query plan: *given finite engineers and a finite blast radius, what do we change, in what order, so the platform stops bleeding and starts compounding?* The hard part isn't picking good projects — it's sequencing them against shared infrastructure (one metastore, one Spark version, one Kafka cluster) where the wrong order causes two migrations instead of one.
+A roadmap is not a list of features with quarters next to them. For a data platform it is a **risk-and-capacity allocation document** that answers one question for an executive who can't read a query plan: *given finite engineers and a finite blast radius (the number of tables, pipelines, or teams that could break if something goes wrong), what do we change, in what order, so the platform stops bleeding and starts compounding?* The hard part isn't picking good projects — it's sequencing them against shared infrastructure (one metastore, one Spark version, one Kafka cluster) where the wrong order causes two migrations instead of one.
 
 ## TL;DR
 
-- A data-platform roadmap sequences work against **shared, hard-to-fork infrastructure** — a single Hive Metastore, one EMR/Spark line, one Kafka cluster. Order matters more than selection because dependencies are physical, not logical.
+- A data-platform roadmap sequences work against **shared, hard-to-fork infrastructure** — a single Hive Metastore (the catalog that stores table schemas and partition locations for Hive and Spark), one EMR/Spark version line, one Kafka cluster. Order matters more than selection because dependencies are physical, not logical.
 - Plot every initiative on a **2×2 of leverage (engineer-hours unblocked) vs. blast radius (tables/pipelines affected)**. High-leverage, low-blast work goes first; it buys you the credibility and slack to do the scary migrations later.
-- Sequence by the **dependency DAG of platform primitives**, not by team preference. You cannot adopt Iceberg hidden partitioning before you've moved off the Hive metastore; you cannot enforce schemas before you have a registry.
-- Express commitments as **capacity-bounded bands (Now / Next / Later)** with explicit *exit criteria*, never calendar dates. "Now = the 2 things in flight; Next = unblocked when Now lands; Later = blocked or unfunded."
+- Sequence by the **dependency DAG of platform primitives**, not by team preference. You cannot adopt Iceberg hidden partitioning (Iceberg is an open table format that supports row-level deletes and efficient partitioning) before you've moved off the Hive metastore; you cannot enforce schemas before you have a schema registry.
+- Express commitments as **capacity-bounded bands (Now / Next / Later)** with explicit *exit criteria* (testable conditions that define when a piece of work is truly done), never calendar dates. "Now = the 2 things in flight; Next = unblocked when Now lands; Later = blocked or unfunded."
 - Every roadmap line carries a **kill/trigger condition**. A migration that doesn't define "we stop and roll back if X" is a hope, not a plan.
-- Reserve **20–30% of capacity for keep-the-lights-on** (on-call, version bumps, cost regressions). Roadmaps that assume 100% feature velocity are fiction and get blown up by the first Log4Shell-grade CVE.
+- Reserve **20–30% of capacity for keep-the-lights-on** (on-call response, version bumps, cost regressions). Roadmaps that assume 100% feature velocity are fiction and get blown up by the first Log4Shell-grade CVE (a critical security vulnerability requiring emergency patching).
 
 ## Why this matters in production
 
 Concrete scenario. You inherit a platform: ~4,000 Hive tables on S3, EMR 5.36 (Spark 2.4), an external Hive Metastore on Aurora MySQL, Airflow 1.x, and a Kafka 2.6 cluster feeding a half-dozen streaming jobs. Three things are simultaneously on fire:
 
 1. Finance flagged a **$180k/month S3 + EMR bill** with 40% idle cluster time.
-2. Analysts hit **metastore lock contention** every morning — `ALTER TABLE ... ADD PARTITION` storms during the 6 AM backfill window cause 90-second `MSCK REPAIR` stalls.
+2. Analysts hit **metastore lock contention** every morning — `ALTER TABLE ... ADD PARTITION` storms during the 6 AM backfill window cause 90-second `MSCK REPAIR` stalls. (Lock contention means multiple processes are trying to update the same metastore records at the same time, causing each one to wait in line.)
 3. A directive came down: **GDPR-style row-level deletes** must be supported within two quarters.
 
 Every one of these has an obvious local fix. Cost: spot fleets and autoscaling. Locks: batch partition registration. Deletes: switch to a table format with row-level mutation (Iceberg/Delta/Hudi). The trap is treating them as three independent tracks. They share a metastore and a Spark version. Iceberg row-level deletes want Spark 3.3+. Spark 3 changes shuffle behavior, which changes your cost profile. Autoscaling EMR with the old metastore makes lock contention *worse* because more concurrent executors mean more concurrent partition writes.
 
-The roadmap's job is to find the **one ordering** where each step unblocks the next instead of fighting it: bump Spark first (unblocks Iceberg *and* lets adaptive query execution kill most of the idle cost), migrate the metastore to Glue Data Catalog (kills the lock storm *and* is the prerequisite for Iceberg), *then* do the format migration table-by-table (delivers deletes). Get the order wrong and you do the Spark upgrade twice — once on Hive tables, again after the format flip — because Iceberg's Spark runtime jar is version-pinned.
+The roadmap's job is to find the **one ordering** where each step unblocks the next instead of fighting it: bump Spark first (unblocks Iceberg *and* lets AQE — Adaptive Query Execution, a Spark 3 feature that automatically optimizes query plans at runtime — kill most of the idle cost), migrate the metastore to Glue Data Catalog (kills the lock storm *and* is the prerequisite for Iceberg), *then* do the format migration table-by-table (delivers deletes). Get the order wrong and you do the Spark upgrade twice — once on Hive tables, again after the format flip — because Iceberg's Spark runtime jar (the compiled library file that must match the Spark version exactly) is version-pinned.
 
 A bad roadmap isn't a slide; it's six months of rework.
 
 ## How it works
 
-The mental model is a **directed acyclic graph of platform capabilities**, where edges are hard prerequisites, overlaid with a capacity budget that drains as you commit.
+The mental model is a **directed acyclic graph of platform capabilities** — think of it as a flowchart where each box is a capability and each arrow means "this must happen before that." It is overlaid with a capacity budget that drains as you commit.
 
 ```mermaid
 graph TD
@@ -67,7 +67,7 @@ Read the DAG, not the calendar. The two **green roots** (Spark upgrade, metastor
 
 For each candidate I score two numbers:
 
-- **Leverage (L):** engineer-hours per quarter this unblocks or saves, across the whole org. AQE on a 200-job fleet that each waste 30 min/day = thousands of hours.
+- **Leverage (L):** engineer-hours per quarter this unblocks or saves, across the whole org. Enabling AQE on a 200-job fleet that each waste 30 min/day = thousands of hours saved.
 - **Blast radius (B):** number of tables/pipelines/teams that break if this goes wrong, weighted by criticality.
 
 Priority isn't `L/B`. It's a quadrant decision:
@@ -97,19 +97,19 @@ Stakeholders want dates. Dates are the one thing you can't honestly give for mig
 - **Next** = unblocked the moment a Now item hits its exit criteria. Named, scoped, *not* scheduled.
 - **Later** = blocked, unfunded, or deliberately deferred. Listed so people stop asking.
 
-An exit criterion is testable: *"Spark upgrade exits when 95% of jobs pass the shadow-run diff and the p99 job runtime is within 10% of baseline."* That sentence does more scheduling than any Gantt chart.
+An exit criterion is testable: *"Spark upgrade exits when 95% of jobs pass the shadow-run diff and the p99 job runtime is within 10% of baseline."* (A shadow run means running the new version in parallel alongside the old one and comparing outputs, without switching traffic over yet.) That sentence does more scheduling than any Gantt chart.
 
 ### 3. The migration long-tail is a power law, not a line
 
-A format or version migration is never linear. The first 80% of tables migrate with one templated job. The last 20% each have a reason they're special, and those reasons take 3× the per-table effort. If you straight-line your burn-down ("we did 800 tables in 4 weeks, so 4,000 in 5 months"), you will miss by a quarter. Model the tail explicitly: bucket tables by *complexity class* (clean / custom-partition / multi-writer / orphaned) and estimate each bucket separately. The orphaned bucket is the one that needs a *decommission* decision from a human, not an engineer — surface it on the roadmap as a dependency on someone else's sign-off.
+A format or version migration is never linear. The first 80% of tables migrate with one templated job. The last 20% each have a reason they're special, and those reasons take 3× the per-table effort. If you straight-line your burn-down ("we did 800 tables in 4 weeks, so 4,000 in 5 months"), you will miss by a quarter. Model the tail explicitly: bucket tables by *complexity class* (clean / custom-partition / multi-writer / orphaned) and estimate each bucket separately. The orphaned bucket (tables with no clear owner) is the one that needs a *decommission* decision from a human, not an engineer — surface it on the roadmap as a dependency on someone else's sign-off.
 
 ### 4. Keep-the-lights-on capacity is non-negotiable and always under-budgeted
 
-Across the last several platforms I've run, **20–30% of engineering capacity** evaporates into version bumps, CVE patches (Log4Shell ate a week of everyone's life), cost regressions, and on-call follow-ups. A roadmap that books 100% of capacity to features is not optimistic — it's wrong, and it fails predictably the first time a transitive dependency ships a critical CVE. Reserve the band explicitly and defend it; the alternative is silently stealing it from your Big Bet and then explaining the slip.
+Across the last several platforms I've run, **20–30% of engineering capacity** evaporates into version bumps, CVE patches (Log4Shell, a critical Java logging vulnerability, ate a week of everyone's life), cost regressions, and on-call follow-ups. A roadmap that books 100% of capacity to features is not optimistic — it's wrong, and it fails predictably the first time a transitive dependency ships a critical CVE. Reserve the band explicitly and defend it; the alternative is silently stealing it from your Big Bet and then explaining the slip.
 
 ### 5. Cross-org dependencies are the real critical path
 
-Your team can move fast. The four downstream teams that read your tables cannot all re-point their readers in the same week. The true duration of a format migration is `max(your_migration_time, slowest_consumer_cutover)`. The roadmap must name those consumers as line items and the contract change (dual-write / dual-read window) that lets them move asynchronously. This is the bridge to [technical strategy](../technical-strategy/README.md): a roadmap that ignores org topology is just a wishlist.
+Your team can move fast. The four downstream teams that read your tables cannot all re-point their readers in the same week. The true duration of a format migration is `max(your_migration_time, slowest_consumer_cutover)`. The roadmap must name those consumers as line items and the contract change (dual-write / dual-read window — a period where you write to both old and new formats so consumers can migrate on their own schedule) that lets them move asynchronously. A roadmap that ignores org topology is just a wishlist.
 
 ## Worked example
 
@@ -204,9 +204,9 @@ spark_3_upgrade:
 - **Roadmap as a generated artifact, not a slide.** Keep initiatives in version control (the YAML/Python above), regenerate the bands on every change, and diff it in PRs. When someone wants to jump the queue, they submit a PR that re-scores — the argument becomes about numbers and dependency edges, not volume.
 - **One "anchor migration" per band, max.** Migrations are coordination-heavy and consume slack you didn't know you had. Running two large migrations concurrently (Spark *and* Airflow *and* format) means every incident now has three suspects. Serialize the anchors; parallelize only the low-blast fill-ins around them.
 - **Dual-write / dual-read bridges for every format or schema cutover.** Write to both old Hive table and new Iceberg table for one cycle; let consumers move on their own clock; flip the canonical pointer last. This converts a hard cross-team deadline into an asynchronous one and is the single biggest de-risker for the consumer critical path.
-- **Tie roadmap lines to [decision records](../decision-records/README.md).** Every Big Bet links to the ADR that justified it. When the trigger condition fires ("cost crossed $250k", "metastore p99 lock > 60s"), the ADR is revisited, not relitigated from scratch.
+- **Tie roadmap lines to decision records.** Every Big Bet links to the ADR (Architecture Decision Record — a short document capturing the context, options considered, and rationale behind a significant technical choice) that justified it. When the trigger condition fires ("cost crossed $250k", "metastore p99 lock > 60s"), the ADR is revisited, not relitigated from scratch.
 - **Publish the kill conditions louder than the goals.** A roadmap that says "we will stop the Iceberg migration and stay on Hive if per-table migration cost exceeds 6 eng-hours at the median" earns more trust than one that promises only success. It signals you've thought about being wrong.
-- **Refresh on triggers, not on a calendar.** Quarterly re-planning is theater if nothing changed. Re-plan when a dependency lands, a cost threshold trips, or an incident reveals a new edge. Tie this into [architecture reviews](../architecture-reviews/README.md) as the standing forum.
+- **Refresh on triggers, not on a calendar.** Quarterly re-planning is theater if nothing changed. Re-plan when a dependency lands, a cost threshold trips, or an incident reveals a new edge. Tie this into architecture reviews as the standing forum.
 
 ## Anti-patterns & failure modes
 
@@ -228,11 +228,11 @@ spark_3_upgrade:
 |---|---|---|
 | Multi-quarter platform evolution with shared infra | **This roadmap model (DAG + bands)** | Dependencies are physical; ordering dominates |
 | Single-team, single-service feature work | A backlog / sprint board | No cross-cutting infra dependencies; dates are honest |
-| One irreversible architecture choice | An [ADR](../decision-records/README.md) | The decision is a point, not a sequence |
-| Org-topology / team-boundary change | A [technical strategy](../technical-strategy/README.md) doc | Roadmap sequences *work*; strategy reshapes *who does it* |
+| One irreversible architecture choice | An ADR (Architecture Decision Record) | The decision is a point, not a sequence |
+| Org-topology / team-boundary change | A technical strategy doc | Roadmap sequences *work*; strategy reshapes *who does it* |
 | "What broke and what's next" after an incident | Architecture review action items | Reactive, scoped, doesn't need band-level planning |
 
-**Now / Next / Later vs. quarterly OKRs:** OKRs answer *what outcome*; the roadmap answers *in what order, given dependencies*. Use OKRs to set the leverage weights; use the roadmap to sequence within them. They're complementary, not competing.
+**Now / Next / Later vs. quarterly OKRs (Objectives and Key Results — a goal-setting framework):** OKRs answer *what outcome*; the roadmap answers *in what order, given dependencies*. Use OKRs to set the leverage weights; use the roadmap to sequence within them. They're complementary, not competing.
 
 ## Interview & architecture-review talking points
 
@@ -249,5 +249,3 @@ spark_3_upgrade:
 - [Decision Records (ADRs)](../decision-records/README.md) — the per-decision artifacts each Big Bet links to and revisits on trigger events.
 - [Architecture Reviews](../architecture-reviews/README.md) — the standing forum where roadmaps get re-planned against new edges and incidents.
 - [Engineering Leadership](../leadership/README.md) — defending the KTLO band and the kill conditions is a leadership act, not a planning one.
-- Apache Iceberg — [Spark runtime version compatibility matrix](https://iceberg.apache.org/multi-engine-support/) — the canonical source for the version-pinned-jar dependency that breaks naive "adopt Iceberg" roadmap lines.
-- Will Larson, *An Elegant Puzzle* (the "Migrations" and "Saying no" chapters) — the strongest published treatment of why migrations are the only scalable way to evolve shared infrastructure.

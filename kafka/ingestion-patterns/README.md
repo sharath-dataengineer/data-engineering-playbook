@@ -4,24 +4,24 @@
 
 ## About This Chapter
 
-**What this is.** A survey of the patterns for moving data out of Kafka — batch, micro-batch, near-real-time, and real-time — plus Lambda, Kappa, CDC, windowed aggregation, and fan-out. This chapter maps latency requirements to the right tool and operational trade-offs.
+**What this is.** A survey of the patterns for moving data out of Kafka — batch, micro-batch, near-real-time, and real-time — plus Lambda, Kappa, CDC, windowed aggregation, and fan-out. This chapter maps latency requirements to the right tool and explains the operational trade-offs of each approach.
 
-**Who it's for.** data engineers, analytics engineers, data/ML engineers, and platform/architecture leads.
+**Who it's for.** Mid-level data engineers, analytics engineers, data/ML engineers, and platform/architecture leads.
 
 **What you'll take away.** By the end you'll be able to:
-- Match a downstream SLA to the right latency tier and tech (Kafka Connect, Spark Structured Streaming, Flink, Kafka Streams, ksqlDB) without over-engineering.
-- Implement micro-batch and streaming ingestion with bounded triggers, checkpoints, and small-file compaction on Delta/Iceberg.
-- Apply CDC (Debezium) change streams and windowed aggregations, and choose between Lambda and Kappa for reprocessing.
+- Match a downstream SLA (service-level agreement — the freshness guarantee your pipeline must meet) to the right latency tier and technology (Kafka Connect, Spark Structured Streaming, Flink, Kafka Streams, ksqlDB) without over-engineering.
+- Implement micro-batch and streaming ingestion with bounded triggers (scheduled processing intervals), checkpoints (saved progress markers so a job can restart where it left off), and small-file compaction on Delta/Iceberg (the process of merging many tiny files into fewer large ones for faster queries).
+- Apply CDC (Change Data Capture — recording every insert, update, and delete from a source database) change streams via Debezium, windowed aggregations, and choose between Lambda and Kappa architectures for reprocessing.
 
 ---
 
 ## TL;DR
 
-- **Batch (hourly+):** Read committed offsets on a schedule, write a file or partition. Simplest. Highest latency. Use when downstream only refreshes hourly anyway.
-- **Micro-batch (5–15 min):** Spark Structured Streaming with a fixed trigger interval. Streaming semantics, batch-like operations. The sweet spot for most analytics pipelines.
-- **Near Real-Time (1–5 min):** Same stack, shorter trigger or lower checkpoint interval. Freshness in minutes at the cost of more small files and higher cluster pressure.
-- **Real-Time (<1 min, sub-second):** Flink or Kafka Streams. Stateful, event-time-aware, millisecond latency. Required for fraud detection, live dashboards, alerting.
-- **Other patterns:** Lambda (dual pipeline), Kappa (streaming-only with replay), CDC via Kafka (Debezium), Stateful Windowed Aggregation, Fan-out.
+- **Batch (hourly+):** Read committed offsets (the last-read position in Kafka) on a schedule, write a file or partition, and exit. Simplest. Highest latency. Use when downstream only refreshes hourly anyway.
+- **Micro-batch (5–15 min):** Spark Structured Streaming with a fixed trigger interval. Streaming infrastructure with batch-like predictability. The sweet spot for most analytics pipelines.
+- **Near Real-Time (1–5 min):** Same stack as micro-batch, just with a shorter trigger or smaller checkpoint interval. Data freshness in minutes, at the cost of more small files and higher cluster pressure.
+- **Real-Time (<1 min, sub-second):** Flink or Kafka Streams. Stateful (keeps running state in memory between events), event-time-aware, millisecond latency. Required for fraud detection, live dashboards, and alerting.
+- **Other patterns:** Lambda (dual pipeline — one fast, one accurate), Kappa (streaming-only with full replay), CDC via Kafka (Debezium), Stateful Windowed Aggregation, Fan-out.
 - **The hard truth:** latency requirements drive tech choice, and lower latency always means more operational complexity. Don't build a real-time pipeline when a micro-batch would satisfy the SLA.
 
 ---
@@ -60,11 +60,11 @@ The right level is determined by one question: **how fresh does the data need to
 
 ### What it is
 
-A scheduled job wakes up on a cron, reads all Kafka messages produced since the last run (using committed offsets or a watermark), writes them to a file, partition, or table, and exits.
+A scheduled job wakes up on a cron (a time-based scheduler), reads all Kafka messages produced since the last run (using committed offsets or a watermark — a marker for the last processed position), writes them to a file, partition, or table, and exits.
 
 ### How it works
 
-The job tracks where it left off — either via Kafka consumer group committed offsets or by storing the last processed offset/timestamp itself. On the next run, it picks up from that point.
+The job tracks where it left off — either via Kafka consumer group committed offsets (Kafka's built-in bookmarking system for each consumer) or by storing the last processed offset/timestamp itself. On the next run, it picks up from that point.
 
 ### Latency
 
@@ -163,20 +163,20 @@ parsed.write \
 
 ### What it is
 
-Spark Structured Streaming running continuously, but configured to produce an output batch every N minutes. The engine reads new Kafka messages, processes them, writes a mini-batch output, then waits for the next trigger. It is streaming infrastructure with batch-like predictability.
+Spark Structured Streaming running continuously, but configured to produce an output batch every N minutes. The engine reads new Kafka messages, processes them, writes a mini-batch output, then waits for the next trigger. It gives you streaming infrastructure with batch-like predictability.
 
 ### How it works
 
-Spark tracks Kafka offsets in a checkpoint directory. Each trigger interval it reads all new messages since the last checkpoint, runs the query, and commits the output + offset atomically. If the job crashes, it resumes from the last committed checkpoint — no data loss, no reprocessing already-written data.
+Spark tracks Kafka offsets in a checkpoint directory (a folder on durable storage where Spark saves its progress). Each trigger interval it reads all new messages since the last checkpoint, runs the query, and commits the output and offset atomically (both together, so they stay in sync). If the job crashes, it resumes from the last committed checkpoint — no data loss, no duplicate writes.
 
 ### Latency
 
-5–15 minutes (configurable). Data visible after the trigger fires and the write commits.
+5–15 minutes (configurable). Data is visible after the trigger fires and the write commits.
 
 ### When to use
 
 - Dashboards or reports need data refreshed every 10–15 minutes
-- ACID writes to Delta or Iceberg are required (Structured Streaming + Delta is the canonical CDC-to-lake pattern)
+- ACID writes (all-or-nothing writes that prevent partial results) to Delta or Iceberg are required — Structured Streaming + Delta is the standard CDC-to-lake pattern
 - Stateless or simple stateful operations (filter, map, window aggregation over short windows)
 - Team runs Spark already — no new runtime to operate
 
@@ -234,7 +234,7 @@ query = parsed.writeStream \
 query.awaitTermination()
 ```
 
-`maxOffsetsPerTrigger` prevents a single trigger from reading a massive backlog and blowing the memory budget — important when the job restarts after a lag.
+`maxOffsetsPerTrigger` (maximum messages read per trigger) prevents a single trigger from reading a massive backlog and running out of memory — important when the job restarts after falling behind.
 
 ---
 
@@ -242,20 +242,20 @@ query.awaitTermination()
 
 ### What it is
 
-The same as micro-batch but with a shorter trigger interval or smaller checkpoint interval. The engineering is identical; the operational demands are higher — more frequent file commits, more small files, more checkpoint pressure.
+The same as micro-batch but with a shorter trigger interval or smaller checkpoint interval. The engineering is identical; the operational demands are higher — more frequent file commits, more small files, and more checkpoint pressure.
 
 ### Latency
 
-1–5 minutes. Data visible within a few minutes of being produced to Kafka.
+1–5 minutes. Data is visible within a few minutes of being produced to Kafka.
 
 ### When to use
 
-- SLA is "data available within 5 minutes" — common for operational dashboards, fraud scoring input, near-real-time alerting
-- Volume is moderate — the pipeline can fully process each micro-batch in well under the trigger interval
+- SLA is "data available within 5 minutes" — common for operational dashboards, fraud scoring input, and near-real-time alerting
+- Volume is moderate — the pipeline can fully process each micro-batch well within the trigger interval
 
 ### The small file problem
 
-A 1-minute trigger writing Parquet to S3 produces 1 file per partition per minute. At 24 partitions (hourly) × 60 triggers/hour = 1,440 files/hour. After a day: 34,560 files. Query performance degrades. A scheduled **compaction job** must consolidate small files.
+A 1-minute trigger writing Parquet to S3 produces 1 file per partition per minute. At 24 partitions (hourly) x 60 triggers per hour = 1,440 files per hour. After a day: 34,560 files. Query performance degrades because the query engine must open and scan thousands of tiny files instead of a few large ones. A scheduled **compaction job** (a separate job that merges small files into larger ones) must run regularly.
 
 ```python
 # Spark Structured Streaming — 1-minute trigger
@@ -310,7 +310,7 @@ stream.sink_to(iceberg_sink)
 env.execute("order-events-near-rt")
 ```
 
-The checkpoint interval in Flink directly controls end-to-end latency: with a 60-second checkpoint interval, output is visible within ~60–90 seconds of the event being produced.
+The checkpoint interval in Flink directly controls end-to-end latency: with a 60-second checkpoint interval, output is visible within roughly 60–90 seconds of the event being produced.
 
 ---
 
@@ -318,18 +318,18 @@ The checkpoint interval in Flink directly controls end-to-end latency: with a 60
 
 ### What it is
 
-Continuous, event-by-event processing with millisecond-to-second end-to-end latency. The pipeline processes each event as it arrives, with no batching delay. Stateful operations (windowed aggregations, joins across streams) are maintained in memory.
+Continuous, event-by-event processing with millisecond-to-second end-to-end latency. The pipeline processes each event as it arrives, with no batching delay. Stateful operations (windowed aggregations, joins across streams) are maintained in memory between events.
 
 ### Latency
 
-Milliseconds to seconds. Sub-second is achievable with Flink or Kafka Streams for stateless pipelines; tens of seconds for stateful pipelines with watermarks.
+Milliseconds to seconds. Sub-second is achievable with Flink or Kafka Streams for stateless pipelines; tens of seconds for stateful pipelines with watermarks (the engine's estimate of how far the event clock lags behind wall time).
 
 ### When to use
 
-- Fraud detection: a payment event must be scored and acted on before it completes
+- Fraud detection: a payment event must be scored and acted on before the transaction completes
 - Live leaderboards, real-time recommendation updates, alerting on threshold breaches
-- Operational dashboards where stale data causes business decisions to be wrong
-- Stream-to-stream joins: enrich an event with another stream in near-real-time
+- Operational dashboards where stale data causes wrong business decisions
+- Stream-to-stream joins: enriching one event stream with data from another stream in near-real-time
 
 ### When to avoid
 
@@ -370,9 +370,9 @@ env.execute("order-rt-aggregation")
 ```
 
 **Key Flink concepts:**
-- **Event time vs processing time**: event time uses the timestamp embedded in the event; processing time uses the clock when the event arrives. Event time is correct for out-of-order data; processing time is simpler but wrong under lag.
-- **Watermarks**: the engine's estimate of how far behind wall clock the event stream is. Events arriving after the watermark are considered late. The watermark advances as new events arrive; a 30-second bound means "I will wait 30 seconds for late events."
-- **State backends**: RocksDB (default for large state) stores state on local disk, spills to memory — survives restarts via checkpoints.
+- **Event time vs processing time**: event time uses the timestamp embedded in the event itself; processing time uses the clock at the moment the event arrives at the engine. Event time is correct for out-of-order data; processing time is simpler but produces wrong results when events arrive late.
+- **Watermarks**: the engine's estimate of how far behind wall clock the event stream is. Events arriving after the watermark are considered late. The watermark advances as new events arrive; a 30-second bound means "I will wait 30 seconds for late events before closing a window."
+- **State backends**: RocksDB (a disk-backed key-value store used as Flink's default for large state) stores state on local disk and spills to memory — survives restarts via checkpoints.
 
 ### Kafka Streams — Stateful in-Process
 
@@ -398,7 +398,7 @@ KafkaStreams app = new KafkaStreams(builder.build(), config);
 app.start();
 ```
 
-Kafka Streams runs **inside your application process** — no separate cluster to operate. State is stored in local RocksDB, replicated to a Kafka changelog topic for recovery. This makes it operationally simpler than Flink for moderate workloads.
+Kafka Streams runs **inside your application process** — no separate cluster to operate. State is stored in local RocksDB, replicated to a Kafka changelog topic (a special internal topic that backs up state so it can be restored after a crash) for recovery. This makes it operationally simpler than Flink for moderate workloads.
 
 ### ksqlDB — SQL on Streams
 
@@ -429,7 +429,7 @@ GROUP BY customer_id
 EMIT CHANGES;
 ```
 
-ksqlDB continuously updates the materialized table as new events arrive. Results are stored in a Kafka topic and queryable via REST API or push queries.
+ksqlDB continuously updates the materialized table (a pre-computed result that stays current as new events arrive) as new events come in. Results are stored in a Kafka topic and queryable via REST API or push queries (queries that stream results back to the client as they change).
 
 ---
 
@@ -437,11 +437,11 @@ ksqlDB continuously updates the materialized table as new events arrive. Results
 
 ### What it is
 
-Run two parallel pipelines from the same Kafka topic:
+Lambda architecture means running two parallel pipelines from the same Kafka topic, trading off speed versus accuracy:
 - **Speed layer**: real-time or near-real-time (Flink or Spark Streaming), produces approximate but fresh results
 - **Batch layer**: hourly/daily batch job, produces accurate but delayed results
 
-A **serving layer** merges results from both, returning the most recent batch result enriched with the speed layer's delta.
+A **serving layer** (the query endpoint that consumers hit) merges results from both, returning the most recent batch result enriched with the speed layer's delta (the recent events not yet covered by the batch).
 
 ```
 Kafka Topic
@@ -467,7 +467,7 @@ Kafka Topic
 
 ### What it is
 
-A single streaming pipeline reads from Kafka for all processing — both real-time and historical. When a bug is fixed or logic changes, the pipeline is restarted from `offset=earliest` to reprocess the full history. Kafka retention is set long enough to replay the entire dataset.
+Kappa architecture means using a single streaming pipeline for all processing — both real-time and historical. When a bug is fixed or logic changes, the pipeline is restarted from `offset=earliest` (the very beginning of the Kafka topic) to reprocess the full history. Kafka retention (how long messages are kept on the broker) must be set long enough to replay the entire dataset you need.
 
 ```
 Kafka Topic (long retention: 30–90 days)
@@ -478,14 +478,14 @@ Kafka Topic (long retention: 30–90 days)
 
 ### When to use
 
-- Streaming pipeline logic can correctly reprocess historical data (event time, not processing time)
+- Streaming pipeline logic can correctly reprocess historical data (requires event time, not processing time)
 - Kafka retention is long enough (weeks to months) to hold the full reprocess window
 - Simplicity of a single codebase outweighs reprocessing cost
 
 ### When to avoid
 
-- Historical data exceeds Kafka retention — you'd need to re-seed from the lake to Kafka
-- Reprocessing takes longer than your SLA allows (replaying 30 days of events takes time)
+- Historical data exceeds Kafka retention — you would need to re-seed from the lake back into Kafka
+- Reprocessing takes longer than your SLA allows (replaying 30 days of events takes significant time)
 
 ---
 
@@ -493,7 +493,7 @@ Kafka Topic (long retention: 30–90 days)
 
 ### What it is
 
-A database change data capture (CDC) tool (Debezium is the standard) captures row-level inserts, updates, and deletes from a source database's transaction log and publishes them as structured events to Kafka. Downstream consumers treat the Kafka topic as a change stream and apply the changes to a target (data lake, warehouse, search index).
+CDC (Change Data Capture) is the practice of recording every row-level insert, update, and delete from a source database's transaction log. Debezium is the standard open-source CDC tool — it captures those changes and publishes them as structured events to Kafka. Downstream consumers treat the Kafka topic as a change stream and apply the changes to a target (data lake, warehouse, search index).
 
 ```
 PostgreSQL → Debezium → Kafka topic (op: I/U/D, before/after image)
@@ -560,7 +560,7 @@ See [Merge Strategies](../../../pipeline-patterns/merge-strategies/README.md) fo
 
 ### What it is
 
-Rather than forwarding raw events to a lake, the streaming pipeline computes aggregations over time windows before writing. The result is a pre-aggregated metric table — smaller, faster to query, updated continuously.
+Rather than forwarding raw events to a lake, the streaming pipeline computes aggregations over time windows before writing. The result is a pre-aggregated metric table — smaller, faster to query, and updated continuously.
 
 ### Window types
 
@@ -608,20 +608,20 @@ EMIT CHANGES;
 | `continuous="1 second"` | Experimental; sub-second | Not production-ready for stateful |
 
 - **Strengths:** familiar API, native Delta/Iceberg support, exactly-once with Delta, rich Python API
-- **Weaknesses:** high latency floor (~30s minimum practical), heavy JVM overhead, limited stateful operation expressiveness vs Flink
+- **Weaknesses:** high latency floor (~30s minimum practical), heavy JVM overhead, limited stateful operation expressiveness compared to Flink
 
 ### Apache Flink
 
 - **Best for:** real-time (<1 min), complex stateful operations, event-time correctness, stream-to-stream joins
-- **Checkpoint interval → latency:** the end-to-end latency is roughly `checkpoint interval + network latency`. 10-second checkpoint → ~15-second latency.
-- **State backends:** HashMap (in-memory, fast, limited size), RocksDB (disk-backed, large state, slightly slower)
-- **Strengths:** true event-time semantics, efficient stateful ops, sub-second latency, production-grade at massive scale
-- **Weaknesses:** steeper learning curve, Java/Scala-first (PyFlink is usable but lags), harder to debug than batch
+- **Checkpoint interval and latency:** end-to-end latency is roughly `checkpoint interval + network latency`. A 10-second checkpoint interval produces roughly 15 seconds of end-to-end latency.
+- **State backends:** HashMap (in-memory, fast, limited size), RocksDB (disk-backed, handles large state, slightly slower)
+- **Strengths:** true event-time semantics, efficient stateful operations, sub-second latency, production-grade at massive scale
+- **Weaknesses:** steeper learning curve, Java/Scala-first (PyFlink is usable but lags behind the Java API), harder to debug than batch
 
 ### Kafka Streams
 
-- **Best for:** stateful in-process streaming within the Kafka ecosystem; no separate compute cluster
-- **Strengths:** runs inside your application, exactly-once via Kafka transactions, low ops overhead, scales by adding application instances
+- **Best for:** stateful in-process streaming within the Kafka ecosystem; no separate compute cluster needed
+- **Strengths:** runs inside your application, exactly-once via Kafka transactions, low operational overhead, scales by adding application instances
 - **Weaknesses:** Java-only, writing results outside Kafka requires a custom sink, no native Parquet/Delta/Iceberg output
 
 ### ksqlDB
@@ -632,10 +632,10 @@ EMIT CHANGES;
 
 ### Kafka Connect (Sink Connectors)
 
-- **Best for:** Kafka → storage without transformation; config-only, no code
+- **Best for:** moving data from Kafka to storage without transformation; config-only, no code
 - **Common connectors:** S3 Sink, JDBC Sink (Postgres, MySQL), Elasticsearch Sink, BigQuery Sink, Snowflake Sink
-- **Strengths:** zero code, reliable, connector ecosystem is broad
-- **Weaknesses:** limited transformation capability (SMTs are basic); schema evolution requires care; each connector has its own bugs and quirks
+- **Strengths:** zero code, reliable, broad connector ecosystem
+- **Weaknesses:** limited transformation capability (SMTs — Single Message Transforms — are basic); schema evolution requires care; each connector has its own bugs and quirks
 
 ---
 
@@ -689,9 +689,9 @@ Is the team SQL-first with no JVM experience?
 | Anti-pattern | What you'll observe | The fix |
 |---|---|---|
 | **Real-time pipeline writing directly to Snowflake/Redshift** | Per-row inserts crater warehouse performance; cost explodes | Write to S3 (micro-batch), COPY into warehouse periodically; or use a staging Kafka Connect JDBC sink with batching |
-| **Micro-batch with no compaction** | S3 folder fills with millions of 1 KB files; Athena/Spark queries take 10× longer | Schedule `OPTIMIZE` (Delta) or `rewrite_data_files` (Iceberg) every few hours |
+| **Micro-batch with no compaction** | S3 folder fills with millions of 1 KB files; Athena/Spark queries take 10x longer | Schedule `OPTIMIZE` (Delta) or `rewrite_data_files` (Iceberg) every few hours |
 | **Using processing time instead of event time for windowed aggregations** | Late-arriving events (mobile app offline for 10 min) fall in the wrong window | Use event-time with watermarks; tolerate N seconds of late data |
-| **No `maxOffsetsPerTrigger` cap on Structured Streaming** | After a lag (deploy, crash), the first trigger reads 50M events and OOMs | Set `maxOffsetsPerTrigger` to bound per-batch memory |
+| **No `maxOffsetsPerTrigger` cap on Structured Streaming** | After a lag (deploy, crash), the first trigger reads 50M events and runs out of memory | Set `maxOffsetsPerTrigger` to bound per-batch memory |
 | **Kafka Connect S3 Sink with no schema registry** | Schema changes in the producer break the sink silently | Use Confluent Schema Registry + Avro/Protobuf; the connector enforces schema compatibility |
 | **Lambda architecture with diverging logic** | Batch result and speed layer result disagree; analysts trust neither | Share logic (same JAR/library) between layers; or migrate to Kappa |
 | **Setting Kafka retention too short for Kappa** | Reprocessing from `earliest` fails — messages expired | Increase retention on topics used for reprocessing (30–90 days); or use a tiered storage plugin |
@@ -707,9 +707,9 @@ Regardless of pattern, these metrics must be monitored:
 |---|---|---|
 | **Consumer group lag** (messages behind) | Pipeline is falling behind; latency is increasing | > 1 trigger interval's worth of messages |
 | **Processing time per trigger** | Trigger taking longer than interval — catching up or overloaded | > 80% of trigger interval |
-| **Checkpoint duration** (Flink/SS) | Checkpoint backpressure; state too large | > 30% of checkpoint interval |
+| **Checkpoint duration** (Flink/SS) | Checkpoint backpressure (the system struggling to save state fast enough); state too large | > 30% of checkpoint interval |
 | **Records dropped / deserialization errors** | Bad messages arriving; schema mismatch | Any non-zero sustained rate |
-| **Sink write latency** | Bottleneck at output (S3 throttle, DB lock) | P95 > 2× baseline |
+| **Sink write latency** | Bottleneck at output (S3 throttle, DB lock) | P95 > 2x baseline |
 
 ---
 
@@ -717,11 +717,11 @@ Regardless of pattern, these metrics must be monitored:
 
 - **"When would you use Flink over Spark Structured Streaming?"** — When you need sub-minute latency, complex stateful operations (multi-stream joins, long windows), or true event-time semantics with fine-grained watermark control. For micro-batch to near-RT writing to Delta or Iceberg, Structured Streaming is simpler and the team is often already running Spark.
 
-- **"What is the small file problem in streaming, and how do you fix it?"** — Every micro-batch trigger creates N files (one per partition). Frequent triggers × many partitions = millions of small files that degrade query performance. Fix: schedule Delta `OPTIMIZE` or Iceberg `rewrite_data_files` every few hours to compact them, and set `target-file-size` to 128–256 MB.
+- **"What is the small file problem in streaming, and how do you fix it?"** — Every micro-batch trigger creates N files (one per partition). Frequent triggers x many partitions = millions of small files that degrade query performance. Fix: schedule Delta `OPTIMIZE` or Iceberg `rewrite_data_files` every few hours to compact them, and set `target-file-size` to 128–256 MB.
 
-- **"What's the difference between event time and processing time?"** — Processing time is when the event arrives at the engine. Event time is the timestamp embedded in the event itself. A mobile event produced at 10:00 but delivered at 10:45 (due to connectivity) has processing time 10:45 but event time 10:00. Windowed aggregations must use event time and watermarks to correctly handle out-of-order delivery.
+- **"What's the difference between event time and processing time?"** — Processing time is when the event arrives at the engine. Event time is the timestamp embedded in the event itself. A mobile event produced at 10:00 but delivered at 10:45 (due to connectivity issues) has processing time 10:45 but event time 10:00. Windowed aggregations must use event time and watermarks to correctly handle out-of-order delivery.
 
-- **"How do you handle exactly-once delivery from Kafka to a data lake?"** — Spark Structured Streaming + Delta Lake: the engine commits Kafka offsets and the Delta transaction atomically in the checkpoint. If the job crashes mid-write, the incomplete Delta transaction is rolled back on restart and the offsets are replayed. Flink achieves the same via two-phase commit with the Iceberg sink.
+- **"How do you handle exactly-once delivery from Kafka to a data lake?"** — Spark Structured Streaming + Delta Lake: the engine commits Kafka offsets and the Delta transaction atomically in the checkpoint. If the job crashes mid-write, the incomplete Delta transaction is rolled back on restart and the offsets are replayed. Flink achieves the same via two-phase commit (a protocol where the sink confirms it can write before the checkpoint finalizes) with the Iceberg sink.
 
 - **"When is Kafka Streams a better choice than Flink?"** — When the team is Java-first, the pipeline is stateful but not complex, and you want to avoid operating a separate Flink cluster. Kafka Streams runs in-process, scales by adding application replicas, and uses Kafka itself for state durability. The trade-off: no native lake sink, Java-only, less expressive than Flink for complex windowing.
 

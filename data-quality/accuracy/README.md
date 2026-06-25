@@ -4,14 +4,14 @@
 
 ## About This Chapter
 
-**What this is.** Accuracy is the data-quality dimension that asks whether a stored value matches the real-world fact it claims to represent. This chapter covers how to verify it against an independent reference — reconciliation, sampling, and statistical drift detection.
+**What this is.** Accuracy is the data-quality dimension that asks whether a stored value matches the real-world fact it claims to represent. This chapter covers how to verify it against an independent reference — reconciliation (comparing your data against a trusted source), sampling (checking a representative subset), and statistical drift detection (alerting when the shape of your data changes unexpectedly).
 
-**Who it's for.** data engineers, analytics engineers, platform/architecture leads, and engineers preparing for senior/staff data-engineering interviews.
+**Who it's for.** Mid-level data engineers, analytics engineers, platform/architecture leads, and engineers preparing for senior/staff data-engineering interviews.
 
 **What you'll take away.** By the end you'll be able to:
 - Choose between reconciliation, stratified sampling, and PSI/KS drift detection based on what reference (if any) actually exists for a fact.
-- Design a tolerance model (absolute floor + relative band) and reconcile at business-key grain to produce queryable, auto-classified break records.
-- Build a dollar-weighted accuracy gate that blocks promotion, and tie accuracy to determinism, fan-out invariants, and effective-dated reference data.
+- Design a tolerance model (absolute floor + relative band) and reconcile at business-key grain (the most granular level that identifies a unique business entity, like `order_id`) to produce queryable, auto-classified break records.
+- Build a dollar-weighted accuracy gate that blocks promotion (prevents bad data from reaching dashboards), and tie accuracy to determinism, fan-out invariants (checks that a join did not accidentally multiply rows), and effective-dated reference data (dimension tables that track changes over time).
 
 ---
 
@@ -23,14 +23,14 @@ Accuracy is the dimension that asks: *does the value in the table match the real
 - There are three tractable strategies: **reconciliation** against the system of record, **sampling + manual/golden audit** for facts no system holds, and **statistical drift detection** for high-volume facts where exact reconciliation is too expensive.
 - Accuracy decays silently. The failure mode is not a crash — it's a slowly diverging number that nobody catches until a VP screenshots a wrong revenue figure. Build *trend* alerts on accuracy rates, not just point checks.
 - Tolerance is mandatory. Floating-point sums, timezone boundaries, and late-arriving corrections mean "exact match" reconciliation produces a flood of false positives. Define a tolerance band (absolute + relative) per metric before you ship the check.
-- Accuracy bugs are usually *transformation* bugs (wrong join key, fan-out, currency not converted, SCD lookup at the wrong effective date), not ingestion bugs. The check belongs at the gold/serving layer where business semantics live, not only at bronze.
-- The cheapest accuracy control is a deterministic, idempotent pipeline with a recompute-from-source capability. If you can replay, you can re-establish truth; if you can't, every accuracy incident becomes archaeology.
+- Accuracy bugs are usually *transformation* bugs (wrong join key, fan-out, currency not converted, SCD lookup at the wrong effective date), not ingestion bugs. The check belongs at the gold/serving layer (the final, business-ready layer of your data warehouse) where business semantics live, not only at bronze (the raw ingestion layer).
+- The cheapest accuracy control is a deterministic, idempotent pipeline (one that produces the same result when run more than once) with a recompute-from-source capability. If you can replay, you can re-establish truth; if you can't, every accuracy incident becomes archaeology.
 
 ## Why this matters in production
 
 Consider a daily `fct_revenue_by_product` table feeding a finance dashboard and the board deck. The pipeline joins `orders`, `order_lines`, `refunds`, and an FX rate dimension, then aggregates to product × day × currency-normalized USD.
 
-Two weeks ago someone added a new `promotions` table and joined it in to attribute discounts. The join key was `(order_id)` but `promotions` has multiple rows per order when an order stacks two promo codes. Nobody added a `count(*)` guard. The result: orders with stacked promos fan out 2×, doubling their revenue line. The error is ~0.4% of total revenue — invisible on a trend chart, well within day-to-day noise. Completeness is fine (every order is present). Freshness is fine (it ran at 06:00 as always). Validity is fine (all amounts are positive decimals). Every gate is green.
+Two weeks ago someone added a new `promotions` table and joined it in to attribute discounts. The join key was `(order_id)` but `promotions` has multiple rows per order when an order stacks two promo codes. Nobody added a `count(*)` guard. The result: orders with stacked promos fan out 2× (each order row is duplicated), doubling their revenue line. The error is ~0.4% of total revenue — invisible on a trend chart, well within day-to-day noise. Completeness is fine (every order is present). Freshness is fine (it ran at 06:00 as always). Validity is fine (all amounts are positive decimals). Every gate is green.
 
 Finance closes the month. The number is 0.4% high. It reconciles *almost* to the billing system, and the analyst chalks the gap up to "timing." Three months later a fan-out on a different table compounds it to 1.8%, an auditor flags it, and now you're explaining to the CFO why the data team's revenue number never matched billing. That conversation is the cost of not having an accuracy control.
 
@@ -61,9 +61,9 @@ flowchart TD
 abs(warehouse_value - reference_value) <= max(abs_tol, rel_tol * abs(reference_value))
 ```
 
-Use both an absolute floor (`abs_tol`) and a relative band (`rel_tol`). Pure relative tolerance underflows near zero (a $0.01 reference makes any cent of drift a 100% error); pure absolute tolerance over-alerts on large values. Typical settings for revenue: `abs_tol = $1.00`, `rel_tol = 0.001` (10 bps).
+Use both an absolute floor (`abs_tol`) and a relative band (`rel_tol`). Pure relative tolerance underflows near zero (a $0.01 reference makes any cent of drift a 100% error); pure absolute tolerance over-alerts on large values. Typical settings for revenue: `abs_tol = $1.00`, `rel_tol = 0.001` (10 bps, meaning 0.1%).
 
-**Sampling-based accuracy** estimates an error rate when no system holds the truth — e.g. "is this address geocode correct?" You draw a stratified sample, get ground-truth labels (human review, a trusted third-party API, a manual audit), and compute an error rate with a confidence interval. For a measured error rate `p̂` on a sample of size `n`, the 95% margin of error is approximately:
+**Sampling-based accuracy** estimates an error rate when no system holds the truth — for example, "is this address geocode correct?" You draw a stratified sample (a sample that proportionally covers different segments of your data), get ground-truth labels (human review, a trusted third-party API, a manual audit), and compute an error rate with a confidence interval (a range that shows how certain you are about the estimate). For a measured error rate `p̂` on a sample of size `n`, the 95% margin of error is approximately:
 
 ```
 margin = 1.96 * sqrt( p̂ * (1 - p̂) / n )
@@ -71,7 +71,7 @@ margin = 1.96 * sqrt( p̂ * (1 - p̂) / n )
 
 So a 2% observed error on 1,000 sampled rows has a ±0.87% margin — you can credibly claim "error rate is 1.1%–2.9%," which is enough to gate a release. This is the only honest way to talk about accuracy for un-reconcilable facts: as a *rate with uncertainty*, never as a binary.
 
-**Statistical drift detection** is the fallback when you can't reconcile every row and there's no human truth, but you trust that the *shape* of the data is stable. You compare today's distribution to a baseline using Population Stability Index (PSI) or a KS test. PSI over `k` buckets:
+**Statistical drift detection** is the fallback when you can't reconcile every row and there's no human truth, but you trust that the *shape* of the data is stable. You compare today's distribution to a baseline using Population Stability Index (PSI — a measure of how much a variable's distribution has shifted) or a KS test (Kolmogorov-Smirnov test, a statistical method that checks whether two distributions differ significantly). PSI over `k` buckets:
 
 ```
 PSI = Σ_i (actual_i% - expected_i%) * ln(actual_i% / expected_i%)
@@ -101,19 +101,19 @@ CREATE TABLE recon_breaks (
 ```
 
 ### 2. Timing skew between systems
-The source system is a live OLTP database; the warehouse is a snapshot. If you reconcile a warehouse load taken at 06:00 against a source queried at 09:00, three hours of new orders and refunds will show as breaks. **Reconcile as-of a consistent cut point.** Either snapshot the source at the same watermark (`WHERE updated_at < '2026-06-18 06:00:00'`) or reconcile T-1 closed data only, never the current open day. Late-arriving corrections — a refund posted yesterday but effective two days ago — are the second source of timing noise; this is where SCD effective-dating accuracy intersects with reconciliation (see [scd-types](../../data-modeling/scd-types/)).
+The source system is a live OLTP database (a transactional database optimized for writes, like a billing or CRM system); the warehouse is a snapshot taken at a specific point in time. If you reconcile a warehouse load taken at 06:00 against a source queried at 09:00, three hours of new orders and refunds will show as breaks. **Reconcile as-of a consistent cut point.** Either snapshot the source at the same watermark (`WHERE updated_at < '2026-06-18 06:00:00'`) or reconcile T-1 closed data only, never the current open day. Late-arriving corrections — a refund posted yesterday but effective two days ago — are the second source of timing noise; this is where SCD effective-dating accuracy (tracking which version of a dimension record was valid at a given point in time) intersects with reconciliation.
 
 ### 3. Float and decimal drift
-`SUM` over a billion `DOUBLE` values does not equal the same sum computed in a different order, because floating-point addition is not associative and Spark's shuffle reorders partitions non-deterministically. A reconciliation that requires exact equality on summed doubles will flap. Use `DECIMAL` for money end-to-end and a non-zero `abs_tol`. If you must keep doubles, round to the business precision (`ROUND(x, 2)`) *before* aggregation, and be aware Spark's `sum()` on decimals can overflow and silently return `NULL` if the result exceeds the declared precision — `DECIMAL(18,4)` summing millions of rows needs to widen to `DECIMAL(38,4)`.
+`SUM` over a billion `DOUBLE` values does not equal the same sum computed in a different order, because floating-point addition is not associative (the order of operations affects the result) and Spark's shuffle (the step where Spark redistributes data across workers) reorders partitions non-deterministically. A reconciliation that requires exact equality on summed doubles will flap. Use `DECIMAL` for money end-to-end and a non-zero `abs_tol`. If you must keep doubles, round to the business precision (`ROUND(x, 2)`) *before* aggregation, and be aware Spark's `sum()` on decimals can overflow and silently return `NULL` if the result exceeds the declared precision — `DECIMAL(18,4)` summing millions of rows needs to widen to `DECIMAL(38,4)`.
 
 ### 4. Confusing accuracy with the other dimensions
-A row that's missing from the warehouse shows up as a reconciliation break, but its *cause* is completeness, not accuracy. Auto-classify break reasons (the `break_reason` column above) so the on-call doesn't burn an hour discovering that "the number is wrong" because "we dropped 4,000 rows." Accuracy, [completeness](../completeness/), and [freshness](../freshness/) share the same alerting plumbing but have different remediations: completeness → re-ingest; freshness → re-run; accuracy → fix the transform.
+A row that's missing from the warehouse shows up as a reconciliation break, but its *cause* is completeness, not accuracy. Auto-classify break reasons (the `break_reason` column above) so the on-call engineer doesn't burn an hour discovering that "the number is wrong" because "we dropped 4,000 rows." Accuracy, completeness, and freshness share the same alerting plumbing but have different remediations: completeness → re-ingest; freshness → re-run; accuracy → fix the transform.
 
 ### 5. The reference itself is wrong
-Principal-level trap. Teams treat the "source of truth" as infallible. It isn't. Billing systems double-count canceled-then-rebooked orders; the CRM has a `created_at` in the rep's local timezone. When the warehouse and the source disagree, the answer is sometimes that the warehouse is *right*. This is why you keep break-level detail: you want to be able to walk into a meeting and say "of the $40k gap, $38k is the billing system counting reversals twice, here are the 212 order IDs." Reconciliation that can only say "off by $40k" loses that argument.
+A principal-level trap. Teams treat the "source of truth" as infallible. It isn't. Billing systems double-count canceled-then-rebooked orders; the CRM has a `created_at` in the rep's local timezone. When the warehouse and the source disagree, the answer is sometimes that the warehouse is *right*. This is why you keep break-level detail: you want to be able to walk into a meeting and say "of the $40k gap, $38k is the billing system counting reversals twice, here are the 212 order IDs." Reconciliation that can only say "off by $40k" loses that argument.
 
 ### 6. Recompute determinism
-If your pipeline isn't deterministic — non-idempotent merges, `current_timestamp()` baked into the output, dependence on the order of a `Kafka` partition read — you cannot reproduce a number, and therefore cannot prove which version was accurate. Determinism is a *precondition* for accuracy, not a nice-to-have. Pin FX rates and reference dimensions to an effective date stored *in the run*, not "latest," so a re-run of last Tuesday produces last Tuesday's numbers.
+If your pipeline isn't deterministic — non-idempotent merges (merge operations that produce different results when run twice), `current_timestamp()` baked into the output, dependence on the order of a `Kafka` partition read — you cannot reproduce a number, and therefore cannot prove which version was accurate. Determinism is a *precondition* for accuracy, not a nice-to-have. Pin FX rates and reference dimensions to an effective date stored *in the run*, not "latest," so a re-run of last Tuesday produces last Tuesday's numbers.
 
 ## Worked example
 
@@ -193,11 +193,11 @@ Two design choices carry the weight: the **fan-out assertion fires at the source
 ## Production patterns
 
 - **Dollar-weighted (or impact-weighted) accuracy, not row-count accuracy.** "99.99% of rows reconcile" is meaningless if the 0.01% that don't are your largest accounts. Always weight the accuracy metric by the business magnitude of the fact.
-- **Persist breaks as a table, alert on the trend.** A `dq.recon_breaks` table makes every incident queryable and lets you chart accuracy over time. Alert on the *derivative* — a jump in break count or unreconciled dollars day-over-day — not just a static threshold. Slow drift is the failure mode point-checks miss.
-- **Reconcile T-1 closed data, gate the promotion.** Don't reconcile the open day (timing noise) and don't let an unreconciled partition reach the serving layer. The gate belongs between gold compute and the `swap`/`exchange` that publishes the partition — on `Iceberg`, this is the moment before the snapshot commit becomes the table's current ref.
+- **Persist breaks as a table, alert on the trend.** A `dq.recon_breaks` table makes every incident queryable and lets you chart accuracy over time. Alert on the *derivative* (the day-over-day change) — a jump in break count or unreconciled dollars day-over-day — not just a static threshold. Slow drift is the failure mode point-checks miss.
+- **Reconcile T-1 closed data, gate the promotion.** Don't reconcile the open day (timing noise) and don't let an unreconciled partition reach the serving layer. The gate belongs between gold compute and the `swap`/`exchange` that publishes the partition — on Iceberg (an open-source table format that supports transactions), this is the moment before the snapshot commit becomes the table's current ref.
 - **Invariant assertions at the transform, reconciliation at the boundary.** Cheap, instantaneous invariants (`count == distinct count`, `sum of parts == whole`, `no negative revenue`) catch the bug class at the line of code that caused it. Cross-system reconciliation is slower and catches what invariants can't see. Use both; they're complementary, not redundant.
 - **Stratified sampling for un-reconcilable facts.** For things no system can confirm (geocodes, ML-derived attributes, scraped data), sample stratified by segment, label a few hundred per stratum, and report error rate ± margin. Re-sample on every model/source change.
-- **Golden datasets in CI.** Keep a small, hand-verified fixture with known-correct outputs. Run the real transformation against it in CI so a logic regression (wrong join, dropped currency conversion) fails the build before it touches production data. This is the only accuracy control that's free at runtime.
+- **Golden datasets in CI.** Keep a small, hand-verified fixture (a test dataset with known-correct outputs) and run the real transformation against it in CI (your continuous integration pipeline) so a logic regression (wrong join, dropped currency conversion) fails the build before it touches production data. This is the only accuracy control that's free at runtime.
 - **FX / reference-data effective-dating pinned per run.** Store the FX rate version and dimension snapshot id in the run metadata so re-runs are reproducible and accuracy is provable after the fact.
 
 ## Anti-patterns & failure modes
@@ -230,7 +230,7 @@ Reconciliation is the default when a reference exists — reach for sampling or 
 
 - **"Accuracy can't be asserted from the data alone."** Lead with this. It separates accuracy from validity/completeness and shows you understand you always need an independent reference. Interviewers probe whether you'll naively write a `WHERE x > 0` check and call it accuracy.
 - **Tolerance is a design decision, not a default.** Be ready to defend specific numbers: "10 bps relative, $1 absolute floor, because float drift and FX rounding produce sub-dollar noise and 10 bps is below finance's materiality threshold." Vague answers here read as junior.
-- **Diagnose at the grain, gate at the boundary.** Explain why you reconcile at business-key grain (debuggability) but enforce the SLO on a dollar-weighted aggregate at the promotion boundary (impact). This is the principal-level nuance.
+- **Diagnose at the grain, gate at the boundary.** Explain why you reconcile at business-key grain (debuggability) but enforce the SLO (service-level objective — the agreed-upon accuracy target) on a dollar-weighted aggregate at the promotion boundary (impact). This is the principal-level nuance.
 - **The source of truth can be wrong.** Demonstrating that you keep break-level evidence and have argued *down* a reconciliation gap by showing the source was double-counting signals real production scars.
 - **Determinism as a precondition.** Tie accuracy to idempotency and effective-dating: "I can't prove a number is accurate if I can't reproduce it." This connects accuracy to pipeline architecture, not just checks.
 - **Trend over threshold.** Static thresholds miss slow drift, which is exactly how accuracy fails in practice. Alerting on the derivative is the difference between catching a 0.4% bug at week one versus an auditor catching it at month three.
@@ -243,5 +243,3 @@ Reconciliation is the default when a reference exists — reach for sampling or 
 - [../../data-modeling/scd-types](../../data-modeling/scd-types/) — effective-dating, the mechanism that keeps point-in-time facts accurate as dimensions change
 - [../../lakehouse/iceberg](../../lakehouse/iceberg/) — snapshot/commit semantics that let you gate a partition before it becomes the table's current ref
 - [../../observability/monitoring](../../observability/monitoring/) — wiring break trends into alerting and on-call
-- External: *Data Quality: The Accuracy Dimension*, Jack E. Olson (Morgan Kaufmann) — still the clearest treatment of accuracy vs. the other dimensions
-- External: Great Expectations docs on [expectation suites](https://docs.greatexpectations.io/) and the PSI/KS approach in [evidently](https://docs.evidentlyai.com/) for drift-based accuracy proxies

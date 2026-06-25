@@ -4,29 +4,29 @@
 
 ## About This Chapter
 
-**What this is.** Event-driven systems treat immutable facts on an append-only log (Kafka) as the integration backbone between services. This chapter covers the decoupling win and the hard problems it shifts onto you: ordering, duplicate processing, the dual-write trap, schema evolution, and consumer lag.
+**What this is.** Event-driven systems treat immutable facts on an append-only log (like Kafka) as the backbone that connects services together. Instead of services calling each other directly, they publish and consume events. This chapter covers the main benefit — decoupling — and the hard problems that come with it: ordering, duplicate processing, the dual-write trap, schema evolution, and consumer lag.
 
-**Who it's for.** Data engineers, data/ML engineers, platform/architecture leads, and engineers preparing for senior/staff data-engineering interviews.
+**Who it's for.** Mid-level data engineers, data/ML engineers, platform/architecture leads, and engineers preparing for senior/staff data-engineering interviews.
 
 **What you'll take away.** By the end you'll be able to:
-- Choose a partition key as your ordering-and-concurrency contract, and reason about per-partition ordering vs. parallelism (including hot-partition avoidance).
-- Eliminate dual-write divergence with the transactional outbox + CDC, and build effectively-once processing from at-least-once delivery plus a consumer-side idempotency key.
-- Govern topics with Schema Registry compatibility, DLQs, tombstones, and lag-derivative alerting rather than CPU-based monitoring.
+- Choose a partition key (the field used to route a message to a specific partition) as your ordering-and-concurrency contract, and reason about per-partition ordering vs. parallelism — including how to avoid hot partitions.
+- Eliminate dual-write divergence (when your database and Kafka get out of sync) with the transactional outbox + CDC pattern, and build effectively-once processing from at-least-once delivery plus a consumer-side idempotency key.
+- Govern topics with Schema Registry compatibility, DLQs (dead-letter queues, explained below), tombstones, and lag-derivative alerting rather than CPU-based monitoring.
 
 ---
 
 ## TL;DR
 
 - An event is an immutable fact ("OrderPlaced at 14:02:11Z, order_id=A91"), not a command or a request. Once you internalize that distinction, most design arguments resolve themselves.
-- Kafka gives you ordering **per partition**, not per topic. Your partition key *is* your ordering and concurrency contract — pick it before you pick anything else.
-- At-least-once delivery is the default reality. Exactly-once is a property you *construct* at the consumer with idempotency keys or transactional sinks; it is never something the broker hands you for free.
-- Dual writes (write to DB, then publish to Kafka) are the single most common correctness bug in event systems. The transactional outbox + CDC is the fix, not "wrap both in a try/catch."
-- Schemas are the API. A Schema Registry with `BACKWARD` compatibility and a CI gate is the difference between a 6-month-old topic still working and a 3am pager about a deserialization storm.
-- Consumer lag (not CPU, not throughput) is your primary health signal. If lag is flat or shrinking, the system is healthy; if it grows monotonically, you have a problem regardless of how good the dashboards look.
+- Kafka gives you ordering **per partition** (a shard of a topic), not per topic. Your partition key *is* your ordering and concurrency contract — pick it before you pick anything else.
+- At-least-once delivery (where a message may be delivered more than once, but never lost) is the default reality. Exactly-once is a property you *construct* at the consumer with idempotency keys or transactional sinks; it is never something the broker hands you for free.
+- Dual writes (write to DB, then publish to Kafka) are the single most common correctness bug in event systems. The transactional outbox + CDC (Change Data Capture) is the fix, not "wrap both in a try/catch."
+- Schemas are the API. A Schema Registry (a central store for message schemas) with `BACKWARD` compatibility and a CI gate is the difference between a 6-month-old topic still working and a 3am pager about a deserialization storm (a flood of errors where consumers cannot parse messages).
+- Consumer lag (the number of unprocessed messages behind the latest message, not CPU, not throughput) is your primary health signal. If lag is flat or shrinking, the system is healthy; if it grows monotonically, you have a problem regardless of how good the dashboards look.
 
 ## Why this matters in production
 
-Picture a payments platform. The synchronous path is: API receives a charge, writes a row to Postgres, then needs to (a) update the ledger, (b) notify the fraud service, (c) fan out to the data lake for analytics, (d) trigger a receipt email. If you wire these as synchronous RPC calls, the charge endpoint's availability is now the *product* of four downstreams' availability, its latency is the *sum*, and adding a fifth consumer means redeploying the charge service. At 11+ years of doing this, I can tell you that architecture does not survive contact with a growing org.
+Picture a payments platform. The synchronous path is: API receives a charge, writes a row to Postgres, then needs to (a) update the ledger, (b) notify the fraud service, (c) fan out to the data lake for analytics, (d) trigger a receipt email. If you wire these as synchronous RPC calls (direct service-to-service requests that block until a response arrives), the charge endpoint's availability is now the *product* of four downstreams' availability, its latency is the *sum*, and adding a fifth consumer means redeploying the charge service.
 
 Flip it: the charge service writes one fact — `PaymentCaptured` — to a Kafka topic and returns. The ledger, fraud, lake-ingest, and email services each subscribe independently. The producer doesn't know they exist. Adding a sixth consumer is a new consumer group, zero changes to the producer. Fraud being down for 20 minutes means fraud's consumer lag grows to 20 minutes of backlog and then catches up — it does **not** fail the payment.
 
@@ -34,7 +34,7 @@ That decoupling is the entire value proposition, and it is real. But it moves th
 
 ## How it works
 
-The mental model: producers append immutable records to a partitioned, append-only log. Consumers read at their own pace by tracking an **offset** per partition. The broker retains data by time or size, not by "has everyone read it" — so a slow consumer never blocks a producer, and a new consumer can replay from the beginning.
+The mental model: producers (services that write events) append immutable records to a partitioned, append-only log. Consumers (services that read events) read at their own pace by tracking an **offset** (a position number within a partition) per partition. The broker (Kafka server) retains data by time or size, not by "has everyone read it" — so a slow consumer never blocks a producer, and a new consumer can replay from the beginning.
 
 ```mermaid
 flowchart LR
@@ -56,9 +56,9 @@ flowchart LR
 
 Three invariants do most of the work:
 
-1. **Ordering is per-partition.** Records with the same key always land on the same partition (`partition = murmur2(key) % numPartitions`), and within a partition offsets are monotonic. Across partitions there is *no* global order. So if "all events for one order must be processed in sequence," `order_id` must be the partition key. If you key by `user_id`, two orders for the same user serialize unnecessarily; if you key by nothing (round-robin), you have no per-entity ordering at all.
+1. **Ordering is per-partition.** Records with the same key always land on the same partition (`partition = murmur2(key) % numPartitions`), and within a partition offsets are monotonic (always increasing). Across partitions there is *no* global order. So if "all events for one order must be processed in sequence," `order_id` must be the partition key. If you key by `user_id`, two orders for the same user serialize (queue behind each other) unnecessarily; if you key by nothing (round-robin), you have no per-entity ordering at all.
 
-2. **Offsets are the consumer's bookmark.** A consumer group's progress is `committed_offset` per partition. Lag = `log_end_offset - committed_offset`. *When* you commit relative to *when* you do the side effect determines your delivery semantics:
+2. **Offsets are the consumer's bookmark.** A consumer group's progress is `committed_offset` (the last offset the consumer confirmed it processed) per partition. Lag = `log_end_offset - committed_offset`. *When* you commit relative to *when* you do the side effect determines your delivery semantics (what guarantees you get about message delivery):
 
    | Commit timing | Crash window behavior | Semantics |
    |---|---|---|
@@ -66,15 +66,15 @@ Three invariants do most of the work:
    | Commit **after** processing | Reprocessed on crash | at-least-once |
    | Commit **atomically with** the sink (Kafka transactions / idempotent writes) | No visible duplicate or loss | effectively-once |
 
-3. **Rebalancing reassigns partitions.** When a consumer joins, leaves, or dies (session timeout, `session.timeout.ms` default 45s in modern clients), the group coordinator redistributes partitions. During a stop-the-world rebalance, processing pauses. This is why a consumer doing 90-second batch writes while `max.poll.interval.ms` defaults to 300000 (5 min) is fine, but one doing a 6-minute sync call gets kicked from the group mid-batch and triggers an endless rebalance loop.
+3. **Rebalancing reassigns partitions.** When a consumer joins, leaves, or dies (session timeout, `session.timeout.ms` default 45s in modern clients), the group coordinator redistributes partitions among the remaining consumers. During a stop-the-world rebalance, processing pauses for the whole consumer group. This is why a consumer doing 90-second batch writes while `max.poll.interval.ms` defaults to 300000 (5 min) is fine, but one doing a 6-minute sync call gets kicked from the group mid-batch and triggers an endless rebalance loop.
 
-Partition count is a capacity decision you make early and regret changing: max consumer parallelism within a group equals the partition count, and **increasing partitions changes the key→partition mapping**, breaking per-key ordering for in-flight keys. Size for 2–3x headroom up front rather than resharding live.
+Partition count is a capacity decision you make early and regret changing: max consumer parallelism within a group equals the partition count, and **increasing partitions changes the key-to-partition mapping**, breaking per-key ordering for in-flight keys. Size for 2–3x headroom up front rather than resharding (redistributing data to a different number of partitions) live.
 
 ## Deep dive
 
 ### The dual-write problem (and why outbox beats everything else)
 
-The naive producer does this:
+The dual-write problem is this: you need to write to your database *and* publish an event to Kafka, but these are two separate systems — you cannot make them both commit or both fail together. The naive producer does this:
 
 ```python
 def capture_payment(order):
@@ -85,7 +85,7 @@ def capture_payment(order):
 
 If the process dies between (2) and (3), the DB has the payment but no event was ever published. The ledger never updates. There is no retry that fixes this because the in-memory `event` is gone with the dead process. Reordering the two writes just moves the failure: publish-then-commit can emit an event for a payment that rolled back.
 
-There is no way to make two independent systems commit atomically without a distributed transaction, and you do not want 2PC across Postgres and Kafka in a payments hot path. The **transactional outbox** sidesteps it: write the business row *and* an `outbox` row in the **same local DB transaction**, then a separate relay publishes outbox rows to Kafka.
+There is no way to make two independent systems commit atomically without a distributed transaction (a protocol where two separate systems agree to commit or roll back together), and you do not want 2PC (two-phase commit, a distributed transaction protocol) across Postgres and Kafka in a payments hot path. The **transactional outbox** sidesteps it: write the business row *and* an `outbox` row in the **same local DB transaction**, then a separate relay publishes outbox rows to Kafka.
 
 ```mermaid
 sequenceDiagram
@@ -104,15 +104,15 @@ sequenceDiagram
   CDC->>DB: mark sent (or rely on WAL offset)
 ```
 
-The relay is **at-least-once** (it can crash after publishing, before marking sent, and re-publish), which is exactly why consumers must be idempotent. The outbox does not give you exactly-once; it gives you "the event is published if and only if the DB committed," which is the property that was actually missing. CDC via Debezium reading the Postgres WAL is the production-grade relay — no polling load, low latency, ordered per-aggregate.
+The relay is **at-least-once** (it can crash after publishing, before marking sent, and re-publish), which is exactly why consumers must be idempotent (safe to run more than once with the same result). The outbox does not give you exactly-once; it gives you "the event is published if and only if the DB committed," which is the property that was actually missing. CDC (Change Data Capture) via Debezium reading the Postgres WAL (Write-Ahead Log, a record of every database change) is the production-grade relay — no polling load, low latency, ordered per-aggregate.
 
 ### Idempotency: the consumer's job, not the broker's
 
-Because both the relay and consumer retries produce duplicates, every consumer that has side effects needs a dedupe strategy. Three real options:
+Because both the relay and consumer retries produce duplicates, every consumer that has side effects needs a dedupe strategy. Idempotency means that applying the same operation twice produces the same result as applying it once. Three real options:
 
 1. **Idempotency key + dedupe table.** Each event carries a stable `event_id` (UUID generated at produce time, *not* per attempt). Consumer does `INSERT INTO processed_events(event_id) ... ON CONFLICT DO NOTHING` in the same transaction as its effect; zero rows affected means "already done, skip."
 2. **Natural idempotency.** Design the effect to be safe to repeat: `UPSERT balance SET ... WHERE version = expected` or `SET state='SHIPPED' WHERE order_id=? AND state='PACKED'`. Re-applying is a no-op.
-3. **Kafka EOS for Kafka→Kafka.** With `processing.guarantee=exactly_once_v2` (Kafka Streams) or the transactional producer API, the consume-process-produce loop commits the consumer offset and the output records in one transaction. This only covers Kafka sinks — it does nothing for your Postgres or S3 write.
+3. **Kafka EOS for Kafka-to-Kafka.** With `processing.guarantee=exactly_once_v2` (Kafka Streams) or the transactional producer API, the consume-process-produce loop commits the consumer offset and the output records in one transaction. This only covers Kafka sinks — it does nothing for your Postgres or S3 write.
 
 The trap: people set `enable.idempotence=true` on the **producer** and think they're done. That flag only dedupes producer *retries* within a single producer session against a single broker — it prevents the producer from writing the same record twice on a network retry. It does nothing about consumer reprocessing after a rebalance, which is where the real duplicates come from.
 
@@ -125,13 +125,13 @@ You want both "process events for one order in order" and "process 50k events/se
 
 ### Schema evolution
 
-Topics outlive the code that wrote them. A `payment.captured.v1` event written today might be read by a replay job in 18 months. Schema Registry (Avro/Protobuf) enforces compatibility *before* a producer can register a new schema:
+Topics outlive the code that wrote them. A `payment.captured.v1` event written today might be read by a replay job in 18 months. Schema Registry (a service that stores and validates message schemas — the agreed-upon structure of an event) enforces compatibility *before* a producer can register a new schema:
 
-- `BACKWARD` (the sensible default): new schema can read old data → consumers upgrade first, then producers. Add fields with defaults; never remove a required field.
-- `FORWARD`: old schema can read new data → producers upgrade first.
-- `FULL`: both. Strictest, and what I require on regulated topics.
+- `BACKWARD` (the sensible default): new schema can read old data. Consumers upgrade first, then producers. Add fields with defaults; never remove a required field.
+- `FORWARD`: old schema can read new data. Producers upgrade first.
+- `FULL`: both directions work. Strictest, and appropriate for regulated topics.
 
-The failure mode without this: a producer adds a non-defaulted required field, deploys, and every consumer running the old schema throws `SerializationException` on deserialize, lands the record in retry, fails again, fills the DLQ, and lag explodes across every consumer group simultaneously. Compatibility checking in CI turns that 3am incident into a failed pull-request build.
+The failure mode without this: a producer adds a non-defaulted required field, deploys, and every consumer running the old schema throws `SerializationException` (a deserialization error meaning the consumer cannot parse the message) on deserialize, lands the record in retry, fails again, fills the DLQ, and lag explodes across every consumer group simultaneously. Compatibility checking in CI turns that 3am incident into a failed pull-request build.
 
 ## Worked example
 
@@ -217,10 +217,10 @@ config:
 ## Production patterns
 
 - **Topic naming as a contract:** `domain.entity.event.vN` (e.g. `payments.payment.captured.v1`). The version is in the name, not just the registry, so a breaking change is a new topic with dual-write/dual-read during migration — never an in-place mutation.
-- **Dead-letter queue with structured reason and replay tooling.** A poison pill (un-deserializable record, business-rule reject) goes to `<topic>.DLQ` with headers: `original_topic`, `original_partition`, `original_offset`, `error`, `attempt_count`. Blocking the partition on one bad record halts a whole entity's stream — never do that. Ship a CLI that replays DLQ records back to the source topic after a fix.
-- **Tombstones for compacted topics.** For a "latest-state-per-key" topic (`cleanup.policy=compact`), publish a record with the key and `null` value to delete that key. Forgetting tombstones is how compacted topics leak deleted entities forever.
+- **Dead-letter queue (DLQ) with structured reason and replay tooling.** A DLQ is a separate topic where unprocessable messages are parked so they do not block the main topic. A poison pill (un-deserializable record or business-rule reject) goes to `<topic>.DLQ` with headers: `original_topic`, `original_partition`, `original_offset`, `error`, `attempt_count`. Blocking the partition on one bad record halts a whole entity's stream — never do that. Ship a CLI that replays DLQ records back to the source topic after a fix.
+- **Tombstones for compacted topics.** A compacted topic (one configured with `cleanup.policy=compact`) keeps only the latest record per key rather than all history. To delete a key from a compacted topic, publish a record with the key and `null` value — this is called a tombstone. Forgetting tombstones is how compacted topics leak deleted entities forever.
 - **Lag-based autoscaling and alerting.** Scale consumers (and alert) on `consumer_lag`, not CPU. KEDA's Kafka scaler on `lagThreshold` is the standard. Alert on *lag derivative* (growing for N minutes) plus absolute lag, so a brief spike during deploy doesn't page but a stuck consumer does.
-- **Idempotent + acks=all producers everywhere.** `enable.idempotence=true`, `acks=all`, `max.in.flight.requests.per.connection<=5`. This is non-negotiable for any topic carrying business facts; the throughput cost is single-digit percent.
+- **Idempotent + acks=all producers everywhere.** `enable.idempotence=true`, `acks=all` (broker only acknowledges after all in-sync replicas have written the record), `max.in.flight.requests.per.connection<=5`. This is non-negotiable for any topic carrying business facts; the throughput cost is single-digit percent.
 - **Consume from `read_committed`** so transactional/outbox events are only visible once committed, never as aborted partials.
 
 ## Anti-patterns & failure modes
@@ -253,19 +253,19 @@ Tooling within event-driven:
 |---|---|---|
 | High-throughput durable log, replay, many consumers | **Kafka** | A DB-backed queue at scale |
 | Per-message ack, visibility timeout, no ordering needed | SQS / RabbitMQ | Kafka for fine-grained per-message retry semantics |
-| Stateful stream processing, joins, EOS Kafka→Kafka | Kafka Streams / Flink | Hand-rolled stateful consumers |
+| Stateful stream processing, joins, EOS Kafka-to-Kafka | Kafka Streams / Flink | Hand-rolled stateful consumers |
 | DB-to-event with correctness | Debezium outbox (CDC) | Application-level dual writes |
 
-Eventual consistency is the price. If "the ledger reflects the payment within ~1 second, and exactly once it converges" is acceptable, event-driven wins. If you need the ledger updated *synchronously inside the charge transaction*, that's one bounded context and a local transaction, not an event.
+Eventual consistency (the guarantee that all consumers will eventually reach the same state, even if not immediately) is the price of event-driven design. If "the ledger reflects the payment within ~1 second, and exactly once it converges" is acceptable, event-driven wins. If you need the ledger updated *synchronously inside the charge transaction*, that's one bounded context and a local transaction, not an event.
 
 ## Interview & architecture-review talking points
 
-- **"Walk me through exactly-once."** Lead with: the broker gives at-least-once; exactly-once is constructed at the sink. Then: producer idempotence dedupes retries, the outbox guarantees publish-iff-committed, the consumer idempotency key guarantees no double-apply. Name where Kafka transactions help (Kafka→Kafka) and where they don't (external sinks). If a candidate says "Kafka does exactly-once for you," that's a flag.
+- **"Walk me through exactly-once."** Lead with: the broker gives at-least-once; exactly-once is constructed at the sink. Then: producer idempotence dedupes retries, the outbox guarantees publish-iff-committed, the consumer idempotency key guarantees no double-apply. Name where Kafka transactions help (Kafka-to-Kafka) and where they don't (external sinks). If a candidate says "Kafka does exactly-once for you," that's a flag.
 - **"How do you keep ordering while scaling?"** Per-partition ordering; key = the entity that requires order; partition count = max parallelism; never multi-thread within a partition without a key-aware executor; never reshard a keyed topic in place.
-- **"What's the failure mode of a dual write, precisely?"** Crash between commit and publish → durable divergence with no retry that recovers it. The reason outbox exists.
+- **"What's the failure mode of a dual write, precisely?"** Crash between commit and publish leads to durable divergence with no retry that recovers it. The reason outbox exists.
 - **"How do you size partitions?"** Target throughput / per-partition throughput, with 2–3x headroom, and acknowledge that increasing later breaks key locality — so I provision up front.
-- **"What do you monitor?"** Consumer lag and its derivative first; DLQ rate; rebalance frequency; end-to-end produce→consume latency. CPU is a distant secondary.
-- **Defending eventual consistency to a skeptical reviewer:** name the bounded contexts, show that no single business invariant spans two services synchronously, and show the convergence path + idempotency that makes "eventually" deterministic rather than hopeful.
+- **"What do you monitor?"** Consumer lag and its derivative first; DLQ rate; rebalance frequency; end-to-end produce-to-consume latency. CPU is a distant secondary.
+- **Defending eventual consistency to a skeptical reviewer:** name the bounded contexts (the boundaries within which a single service owns its data), show that no single business invariant spans two services synchronously, and show the convergence path + idempotency that makes "eventually" deterministic rather than hopeful.
 
 ## Further reading
 
@@ -275,4 +275,3 @@ Eventual consistency is the price. If "the ledger reflects the payment within ~1
 - [Kafka chapter](../../kafka/README.md) — broker internals, ISR, and producer/consumer tuning referenced throughout.
 - [Data Quality](../../data-quality/README.md) — DLQ triage, contract testing, and validating event payloads at ingest.
 - Martin Kleppmann, *Designing Data-Intensive Applications*, Ch. 11 ("Stream Processing") — the canonical treatment of logs, change capture, and exactly-once.
-- Confluent, ["Exactly-Once Semantics in Apache Kafka"](https://www.confluent.io/blog/exactly-once-semantics-are-possible-heres-how-apache-kafka-does-it/) and the Debezium Outbox Event Router documentation.

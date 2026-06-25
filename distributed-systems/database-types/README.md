@@ -6,12 +6,12 @@
 
 **What this is.** A tour of the 11 database families a data engineer encounters — relational, columnar warehouse, document, key-value, wide-column, graph, time-series, search, NewSQL, vector, and data lake. For each, it covers what it is, why it exists, how it works, and where it fits in a pipeline as a source or target.
 
-**Who it's for.** Data engineers, analytics engineers, data/ML engineers, and engineers preparing for senior/staff data-engineering interviews.
+**Who it's for.** Mid-level data engineers, analytics engineers, data/ML engineers, and engineers preparing for senior/staff data-engineering interviews.
 
 **What you'll take away.** By the end you'll be able to:
 - Match a workload's access pattern (point lookup, aggregation, traversal, full-text, similarity, time-range) to the right database type instead of forcing one engine everywhere.
-- Explain each store's storage and query model — row vs column vs LSM vs inverted index vs HNSW — and its consistency and scaling characteristics.
-- Reason about each type's CAP position and its DE role (source vs target), and avoid the classic anti-patterns like analytics on the OLTP primary or Elasticsearch as a warehouse.
+- Explain each store's storage and query model — row vs column vs LSM (Log-Structured Merge tree) vs inverted index vs HNSW (Hierarchical Navigable Small World graph) — and its consistency and scaling characteristics.
+- Reason about each type's CAP position (explained below) and its DE role (source vs target), and avoid the classic anti-patterns like running analytics on the OLTP (Online Transaction Processing) primary database or using Elasticsearch as a warehouse.
 
 ---
 
@@ -37,20 +37,20 @@
 
 Every database type is defined by two things:
 
-**Storage model** — how data is physically laid out on disk:
+**Storage model** — how data is physically laid out on disk. This determines what kinds of reads and writes are fast:
 - Row store: all columns of one row stored together → fast single-row read/write
 - Column store: all values of one column stored together → fast aggregation across many rows
 - Document: JSON blob per entity → flexible schema, nested access
 - Log-structured (LSM tree): writes go to a sequential log, merged in background → high write throughput
-- B-tree: balanced tree index on disk → balanced read/write for sorted access
+- B-tree (balanced tree index on disk): balanced read/write for sorted access
 - Inverted index: word → list of documents → fast full-text lookup
-- Graph: adjacency list → fast edge traversal
+- Graph: adjacency list (each node directly points to its neighbors) → fast edge traversal
 
 **Query model** — how you access data:
-- SQL (declarative)
+- SQL (declarative — you describe what you want, the engine figures out how)
 - Key lookup (GET key → value)
 - Document query (find where field = value within JSON)
-- Graph traversal (MATCH pattern)
+- Graph traversal (MATCH pattern across connected nodes)
 - Vector similarity (find nearest N embeddings to query vector)
 - Time-range scan with aggregation functions
 
@@ -82,7 +82,7 @@ quadrantChart
 
 ### What it is
 
-Stores data in tables (rows and columns) with a fixed schema. Relationships between tables are enforced via foreign keys. Every write is ACID-compliant — Atomic, Consistent, Isolated, Durable. SQL is the query language.
+Stores data in tables (rows and columns) with a fixed schema. Relationships between tables are enforced via foreign keys. Every write is ACID-compliant — Atomic (all-or-nothing), Consistent (data always valid), Isolated (concurrent writes don't interfere), Durable (committed writes survive crashes). SQL is the query language.
 
 ### Why it exists
 
@@ -90,9 +90,9 @@ Before RDBMS, applications stored data in files or hierarchical databases with n
 
 ### How it works
 
-Data is stored **row by row** on disk pages. An index (B-tree by default) is built on the primary key and any indexed column, enabling O(log n) lookups. The query planner evaluates multiple execution strategies (index scan, full table scan, hash join, nested loop join) and picks the lowest-cost plan.
+Data is stored **row by row** on disk pages. An index (B-tree by default) is built on the primary key and any indexed column, enabling O(log n) lookups (meaning lookup time grows slowly even as the table gets very large). The query planner evaluates multiple execution strategies (index scan, full table scan, hash join, nested loop join) and picks the lowest-cost plan.
 
-ACID is enforced via a Write-Ahead Log (WAL): every change is written to the WAL before being applied to the data pages. On crash, the WAL is replayed to restore consistency.
+ACID is enforced via a Write-Ahead Log (WAL — a sequential record of every change before it is applied): every change is written to the WAL before being applied to the data pages. On crash, the WAL is replayed to restore consistency.
 
 ### How it is used
 
@@ -133,7 +133,7 @@ WHERE o.status = 'placed';
 ### DE's perspective
 
 **Role: Primary source system.** Most production applications run on an RDBMS. As a DE, you:
-- Ingest from it via batch polling (`WHERE updated_ts > watermark`) or CDC (Debezium reading the WAL)
+- Ingest from it via batch polling (`WHERE updated_ts > watermark`) or CDC (Change Data Capture — Debezium reading the WAL to stream every insert/update/delete)
 - Land raw data in a staging table or CDC changelog
 - Transform and load into a warehouse or lake
 
@@ -151,7 +151,7 @@ The WAL that powers ACID is also what Debezium reads for CDC. Understanding how 
 
 ### What it is
 
-Stores data **column by column** rather than row by row. Purpose-built for analytical queries: aggregations (SUM, COUNT, AVG), GROUP BY, and table scans over billions of rows. Not designed for single-row transactional writes.
+Stores data **column by column** rather than row by row. OLAP stands for Online Analytical Processing — it means queries that aggregate and analyze large amounts of historical data, as opposed to OLTP (Online Transaction Processing) which handles individual transactions. Purpose-built for aggregations (SUM, COUNT, AVG), GROUP BY, and table scans over billions of rows. Not designed for single-row transactional writes.
 
 ### Why it exists
 
@@ -159,7 +159,7 @@ RDBMS row stores are inefficient for analytics. A query like `SELECT region, SUM
 
 ### How it works
 
-Columns are stored as contiguous byte arrays on disk. Values in a column are similar in type → highly compressible (run-length encoding, dictionary encoding). The query engine reads only the columns referenced in the query, skipping everything else. Queries are parallelized across multiple nodes (MPP — Massively Parallel Processing).
+Columns are stored as contiguous byte arrays on disk. Values in a column are similar in type, so they compress very well (run-length encoding — storing "West" once with a count instead of repeating it; dictionary encoding — replacing repeated strings with small numeric codes). The query engine reads only the columns referenced in the query, skipping everything else. Queries are parallelized across multiple nodes using MPP (Massively Parallel Processing — each node handles a slice of the data simultaneously).
 
 ```
 Row store on disk:   [id=1, region=West, revenue=100] [id=2, region=East, revenue=200] ...
@@ -207,8 +207,6 @@ COPY fact_orders FROM 's3://data-lake/orders/2024-06-18/' IAM_ROLE '...' FORMAT 
 - Monitor query performance — slow queries affect analyst productivity
 - Handle incremental loads: upsert on business key or partition overwrite
 
-See [Choosing Your Data Platform](../../../platform-engineering/choosing-your-data-platform/README.md) for warehouse vs lake decision.
-
 ### Limits
 
 - Expensive at scale (> 5 TB) — per-TB storage pricing makes lakes far cheaper
@@ -221,7 +219,7 @@ See [Choosing Your Data Platform](../../../platform-engineering/choosing-your-da
 
 ### What it is
 
-Stores data as self-contained documents — typically JSON or BSON. Each document can have a different structure. No fixed schema enforced at the database level. Documents are grouped in collections (equivalent to tables), and each document has a unique `_id`.
+Stores data as self-contained documents — typically JSON or BSON (Binary JSON, a compact binary version of JSON). Each document can have a different structure. No fixed schema enforced at the database level. Documents are grouped in collections (equivalent to tables), and each document has a unique `_id`.
 
 ### Why it exists
 
@@ -275,7 +273,7 @@ db.orders.aggregate([
 ### DE's perspective
 
 **Role: Source system.** Applications built on MongoDB are common source systems. As a DE, you:
-- Ingest via Change Streams (MongoDB's CDC mechanism) or periodic full exports
+- Ingest via Change Streams (MongoDB's built-in CDC mechanism that streams every document change) or periodic full exports
 - Handle schema variability — fields present in some documents but not others; `explode()` nested arrays in Spark
 - Flatten nested JSON structures into relational form for warehouse loading
 
@@ -291,7 +289,7 @@ db.orders.aggregate([
 
 ### What it is
 
-The simplest database model: a hash map. Every record has a key and a value. Operations are GET (retrieve by key), PUT (store key → value), and DELETE. No schema, no query language, no joins. Values are opaque bytes (or simple types) to the database.
+The simplest database model: a hash map (think of a dictionary where you look things up by a unique key). Every record has a key and a value. Operations are GET (retrieve by key), PUT (store key → value), and DELETE. No schema, no query language, no joins. Values are opaque bytes (or simple types) to the database — the database does not look inside the value.
 
 ### Why it exists
 
@@ -299,7 +297,7 @@ RDBMS queries go through a SQL parser, query planner, and index lookup — even 
 
 ### How it works
 
-In-memory KV stores (Redis): the entire dataset lives in RAM. A key hashes to a slot in a hash table. GET and SET are O(1). Persistence is optional (AOF log or RDB snapshots). Distributed KV (DynamoDB): a consistent-hashing ring partitions keys across nodes. A GET routes directly to the responsible node with no coordination overhead.
+In-memory KV stores (Redis): the entire dataset lives in RAM. A key hashes to a slot in a hash table. GET and SET are O(1) — constant time regardless of how many keys exist. Persistence is optional (AOF log or RDB snapshots). Distributed KV (DynamoDB): a consistent-hashing ring (a technique that distributes keys evenly across nodes so adding/removing nodes reshuffles as little data as possible) partitions keys across nodes. A GET routes directly to the responsible node with no coordination overhead.
 
 ### How it is used
 
@@ -343,11 +341,11 @@ response = table.get_item(Key={"user_id": "101", "feature_date": "2024-06-18"})
 ### Use cases
 
 1. **Session storage** — web sessions stored in Redis; sub-millisecond retrieval on every request
-2. **Caching** — cache database query results, API responses, rendered HTML; TTL-based auto-expiry
+2. **Caching** — cache database query results, API responses, rendered HTML; TTL-based auto-expiry (data is deleted automatically after a set time)
 3. **Rate limiting** — atomic INCR on a per-user-per-minute counter
 4. **ML feature store serving layer** — precomputed features stored in DynamoDB; model inference reads features in < 5ms
 5. **Real-time leaderboards** — Redis sorted sets rank players by score; top-N query is O(log N)
-6. **Distributed locks** — Redis SETNX for mutual exclusion across services
+6. **Distributed locks** — Redis SETNX (set if not exists) for mutual exclusion across services
 
 ### DE's perspective
 
@@ -376,7 +374,7 @@ Neither RDBMS nor key-value stores handle the combination of: (a) very high writ
 
 ### How it works
 
-Data is stored in an LSM tree (Log-Structured Merge tree). Writes go to an in-memory buffer (memtable) and a sequential commit log — no random disk I/O, so writes are extremely fast. Periodically, memtables are flushed to sorted files (SSTables) on disk. Reads merge the in-memory and on-disk data. Background compaction merges SSTables, removing deleted records and optimizing read paths.
+Data is stored in an LSM tree (Log-Structured Merge tree — a storage design where all writes go to a fast sequential log first, then get reorganized on disk in the background). Writes go to an in-memory buffer (memtable) and a sequential commit log — no random disk I/O, so writes are extremely fast. Periodically, memtables are flushed to sorted files (SSTables — Sorted String Tables, immutable files sorted by key) on disk. Reads merge the in-memory and on-disk data. Background compaction merges SSTables, removing deleted records and optimizing read paths.
 
 Row key design determines everything: rows with the same key prefix are stored physically adjacent, enabling efficient range scans.
 
@@ -426,13 +424,13 @@ rows = session.execute("""
 
 **Role: Source or target, depending on use case.** Cassandra is often a serving database for applications — you ingest from it into the lake for analytics. Sometimes you write pipeline output back to Cassandra for application serving (pre-aggregated metrics per user). As a DE:
 - Read via Spark-Cassandra Connector for batch ingestion
-- Design row keys carefully — a poor row key causes hot partitions (one node overloaded while others are idle)
+- Design row keys carefully — a poor row key causes hot partitions (one node overloaded while others are idle because all queries land on the same key range)
 
 ### Limits
 
-- Queries must include the full partition key — no ad-hoc filtering without it (table scan is prohibited at scale)
-- No joins — denormalization is required by design; model data for how it will be read
-- Tunable consistency means you can configure eventual consistency (faster) or strong consistency (slower); wrong choice causes stale reads
+- Queries must include the full partition key — no ad-hoc filtering without it (full table scans are prohibited at scale because every row might be on a different node)
+- No joins — denormalization (storing the same data in multiple places, shaped for each query pattern) is required by design; model data for how it will be read
+- Tunable consistency means you can configure eventual consistency (faster, may return slightly stale data) or strong consistency (slower, always current); the wrong choice causes stale reads
 
 ---
 
@@ -440,11 +438,11 @@ rows = session.execute("""
 
 ### What it is
 
-Models data as **nodes** (entities) and **edges** (relationships between them). Edges are first-class objects with their own properties. Traversing from one node to another across multiple relationships is the core query operation. Graph query languages: Cypher (Neo4j), Gremlin (TinkerPop), SPARQL (RDF graphs).
+Models data as **nodes** (entities, like a user or a product) and **edges** (relationships between them, like "purchased" or "follows"). Edges are first-class objects with their own properties. Traversing from one node to another across multiple relationships is the core query operation. Graph query languages: Cypher (Neo4j), Gremlin (TinkerPop), SPARQL (RDF graphs).
 
 ### Why it exists
 
-In a relational database, "find all friends of friends of User 101 who have purchased Product X" requires 3 or more self-joins — query time grows exponentially with traversal depth. Graph databases store adjacency lists as direct pointers: traversing from a node to its neighbors is O(1) regardless of total graph size. Deeply connected data that would require dozens of JOINs in SQL is a natural single query in a graph model.
+In a relational database, "find all friends of friends of User 101 who have purchased Product X" requires 3 or more self-joins — query time grows exponentially with traversal depth. Graph databases store adjacency lists (a direct list of neighbors for each node) as direct pointers: traversing from a node to its neighbors is O(1) regardless of total graph size. Deeply connected data that would require dozens of JOINs in SQL is a natural single query in a graph model.
 
 ### How it works
 
@@ -506,7 +504,7 @@ ORDER BY recommenders DESC LIMIT 10
 
 ### What it is
 
-A database optimized for data indexed by time. Every record has a timestamp as the primary dimension. Built-in capabilities for downsampling (aggregate raw per-second data into per-minute or per-hour summaries), retention policies (auto-delete data older than N days), and compression of monotonically increasing timestamps.
+A database optimized for data indexed by time. Every record has a timestamp as the primary dimension. Built-in capabilities for downsampling (automatically aggregating raw per-second data into per-minute or per-hour summaries to save space), retention policies (auto-delete data older than N days), and compression of monotonically increasing (always going up) timestamps.
 
 ### Why it exists
 
@@ -514,7 +512,7 @@ Storing time-series data in a RDBMS works until volume grows. A metrics system e
 
 ### How it works
 
-Data is stored in time-ordered chunks. Recent data lives in memory; older chunks are compressed and flushed to disk. Timestamps are delta-encoded (store the difference between consecutive timestamps, not absolute values — saving 90%+ space). Values are delta-of-delta encoded. Queries specify a time range and a set of tags (labels) to filter — e.g., `SELECT mean(cpu_pct) WHERE host='web-01' AND time > now() - 1h GROUP BY time(5m)`.
+Data is stored in time-ordered chunks. Recent data lives in memory; older chunks are compressed and flushed to disk. Timestamps are delta-encoded (store the difference between consecutive timestamps rather than the full timestamp value — saving 90%+ space). Values are delta-of-delta encoded. Queries specify a time range and a set of tags (labels) to filter — e.g., `SELECT mean(cpu_pct) WHERE host='web-01' AND time > now() - 1h GROUP BY time(5m)`.
 
 ### How it is used
 
@@ -551,8 +549,8 @@ ORDER BY bucket;
 
 1. **Infrastructure monitoring** — CPU, memory, disk I/O per host per second; Grafana dashboards on Prometheus/InfluxDB
 2. **IoT sensor data** — temperature, pressure, vibration from thousands of devices per second
-3. **Financial tick data** — stock prices, bid/ask every millisecond; window aggregations for OHLCV bars
-4. **Application APM** — request latency, error rates, throughput per endpoint per second
+3. **Financial tick data** — stock prices, bid/ask every millisecond; window aggregations for OHLCV bars (Open, High, Low, Close, Volume — the standard candlestick format)
+4. **Application APM (Application Performance Monitoring)** — request latency, error rates, throughput per endpoint per second
 5. **Pipeline SLA tracking** — job duration, records processed, lag per pipeline per run — write these to a TSDB for trend analysis
 
 ### DE's perspective
@@ -574,15 +572,15 @@ ORDER BY bucket;
 
 ### What it is
 
-A database built around **full-text search**: given a text query, find all documents that match, ranked by relevance. The core data structure is an inverted index: a mapping from every token (word) to the list of documents containing it. Supports fuzzy matching, phrase search, faceted filtering, and relevance scoring.
+A database built around **full-text search**: given a text query, find all documents that match, ranked by relevance. The core data structure is an inverted index (a mapping from every word to the list of documents containing it — the same structure as the index at the back of a textbook). Supports fuzzy matching, phrase search, faceted filtering (filtering by category, price range, etc.), and relevance scoring.
 
 ### Why it exists
 
-SQL `LIKE '%query%'` scans the entire table and has no concept of relevance ranking. A search engine tokenizes text, builds an inverted index, and returns results in milliseconds for any text query — ranked by TF-IDF or BM25 relevance scoring. Additionally, Elasticsearch evolved into a general log analytics platform: store JSON documents, query them by any field with low latency.
+SQL `LIKE '%query%'` scans the entire table and has no concept of relevance ranking. A search engine tokenizes text (splits it into individual words), builds an inverted index, and returns results in milliseconds for any text query — ranked by TF-IDF or BM25 relevance scoring (algorithms that rank documents higher when the query terms appear frequently in them but rarely across all documents). Additionally, Elasticsearch evolved into a general log analytics platform: store JSON documents, query them by any field with low latency.
 
 ### How it works
 
-On ingest, text fields are tokenized (split into words), normalized (lowercased, stemmed), and written to the inverted index: `word → [doc_id_1: freq, doc_id_2: freq, ...]`. On query, the query is tokenized, relevant doc lists are fetched and merged, and docs are scored by relevance. All data is immutable on disk (Lucene segments); updates are soft-deletes + new segment inserts; segments are periodically merged.
+On ingest, text fields are tokenized (split into words), normalized (lowercased, stemmed — "running" becomes "run"), and written to the inverted index: `word → [doc_id_1: freq, doc_id_2: freq, ...]`. On query, the query is tokenized, relevant doc lists are fetched and merged, and docs are scored by relevance. All data is immutable on disk (Lucene segments — the underlying storage format); updates are soft-deletes + new segment inserts; segments are periodically merged.
 
 ### How it is used
 
@@ -628,7 +626,7 @@ GET /products/_search
 
 1. **E-commerce product search** — fuzzy match on product name, filter by category/price/brand, ranked by relevance
 2. **Log analytics (ELK stack)** — application logs → Logstash → Elasticsearch → Kibana; search and visualize logs
-3. **Security event search (SIEM)** — search across billions of security events for threat patterns
+3. **Security event search (SIEM — Security Information and Event Management)** — search across billions of security events for threat patterns
 4. **Document search** — internal knowledge bases, legal document search, contract search
 5. **Autocomplete and typeahead** — search-as-you-type with sub-50ms response time
 
@@ -636,7 +634,7 @@ GET /products/_search
 
 **Role: Target — write processed events and documents for search.** As a DE:
 - Write structured events to Elasticsearch via Logstash, Kafka → Elasticsearch Sink Connector, or direct bulk API
-- Manage index lifecycle (rollover old indices to cold storage, delete after retention period) using ILM (Index Lifecycle Management)
+- Manage index lifecycle (rollover old indices to cold storage, delete after retention period) using ILM (Index Lifecycle Management — a built-in Elasticsearch policy engine)
 - Elasticsearch is NOT a data warehouse — don't use it for aggregations across billions of records; use it for search and log exploration
 
 ### Limits
@@ -655,11 +653,11 @@ Provides the full SQL interface and ACID guarantees of a traditional RDBMS, but 
 
 ### Why it exists
 
-The two existing options were: (a) RDBMS — ACID but single-node; (b) NoSQL (Cassandra, DynamoDB) — scalable but no ACID, limited SQL. NewSQL fills the gap: scale-out without giving up transactions. Google Spanner (2012) pioneered this with globally distributed transactions using TrueTime (GPS + atomic clock synchronization).
+The two existing options were: (a) RDBMS — ACID but single-node; (b) NoSQL (Cassandra, DynamoDB) — scalable but no ACID, limited SQL. NewSQL fills the gap: scale-out without giving up transactions. Google Spanner (2012) pioneered this with globally distributed transactions using TrueTime (a clock synchronization system using GPS and atomic clocks to give every write a globally consistent timestamp).
 
 ### How it works
 
-Data is **sharded** across nodes by primary key ranges. Each shard is replicated (typically 3 replicas via Raft consensus). A distributed transaction coordinator ensures that a commit either applies to all involved shards or rolls back — this is two-phase commit (2PC) optimized with Paxos/Raft to avoid blocking on failures. Reads can go to the local replica (fast, slightly stale) or the leader (slower, strongly consistent).
+Data is **sharded** (split into ranges called shards, each stored on a different node) across nodes by primary key ranges. Each shard is replicated (typically 3 replicas via Raft consensus — a distributed agreement protocol that ensures all replicas agree on every write before it is committed). A distributed transaction coordinator ensures that a commit either applies to all involved shards or rolls back — this is two-phase commit (2PC) optimized with Paxos/Raft to avoid blocking on failures. Reads can go to the local replica (fast, slightly stale) or the leader (slower, strongly consistent).
 
 ### How it is used
 
@@ -703,7 +701,7 @@ COMMIT;
 ### DE's perspective
 
 **Role: Source system.** Applications that outgrew Postgres migrate to CockroachDB or Aurora. As a DE, you:
-- CDC from CockroachDB changefeeds (similar to Debezium concept, but built-in)
+- CDC from CockroachDB changefeeds (similar to Debezium concept, but built-in to CockroachDB)
 - Ingest from Spanner using Dataflow templates (GCP-native)
 - The SQL interface means familiar query patterns — same as ingesting from Postgres
 
@@ -719,15 +717,15 @@ COMMIT;
 
 ### What it is
 
-Stores high-dimensional numerical vectors (embeddings) and supports **approximate nearest-neighbor (ANN) search**: given a query vector, find the N most similar vectors by distance (cosine similarity, dot product, Euclidean distance). Embeddings are produced by ML models — a sentence, image, or product can be represented as a 768-to-1536-dimension vector that encodes semantic meaning.
+Stores high-dimensional numerical vectors (embeddings — a list of hundreds or thousands of numbers that an ML model produces to represent the meaning of a piece of text, an image, or a product) and supports **approximate nearest-neighbor (ANN) search**: given a query vector, find the N most similar vectors by distance (cosine similarity, dot product, Euclidean distance). Embeddings are produced by ML models — a sentence, image, or product can be represented as a 768-to-1536-dimension vector that encodes semantic meaning.
 
 ### Why it exists
 
-LLMs and embedding models produce dense vectors that encode meaning. "Find products similar to this description" is not a SQL WHERE clause problem — it's a geometry problem: find the N vectors closest to the query vector in 1536-dimensional space. A brute-force search across millions of vectors is too slow. Vector databases use approximate search indexes (HNSW, IVF-PQ) to search billions of vectors in milliseconds.
+LLMs and embedding models produce dense vectors that encode meaning. "Find products similar to this description" is not a SQL WHERE clause problem — it's a geometry problem: find the N vectors closest to the query vector in 1536-dimensional space. A brute-force search across millions of vectors is too slow. Vector databases use approximate search indexes (HNSW and IVF-PQ — both are graph/clustering structures that let you search billions of vectors in milliseconds by skipping most of the candidates) to search billions of vectors in milliseconds.
 
 ### How it works
 
-Vectors are indexed using Hierarchical Navigable Small World (HNSW) graphs: a layered graph where each node connects to its nearest neighbors at multiple granularity levels. A query navigates the graph from coarse to fine, arriving at the approximate nearest neighbors quickly. Approximate means occasionally a slightly closer vector is missed — configurable accuracy vs. speed tradeoff.
+Vectors are indexed using HNSW (Hierarchical Navigable Small World) graphs: a layered graph where each node connects to its nearest neighbors at multiple granularity levels. A query navigates the graph from coarse to fine, arriving at the approximate nearest neighbors quickly. Approximate means occasionally a slightly closer vector is missed — configurable accuracy vs. speed tradeoff.
 
 ### How it is used
 
@@ -779,7 +777,7 @@ LIMIT 10;
 ### Use cases
 
 1. **Semantic product search** — "find me comfortable shoes for hiking" returns relevant results even with no keyword overlap
-2. **RAG (Retrieval-Augmented Generation)** — LLM needs to answer questions from a knowledge base; embed all documents, retrieve top-k most relevant chunks as context
+2. **RAG (Retrieval-Augmented Generation)** — LLM needs to answer questions from a knowledge base; embed all documents, retrieve top-k most relevant chunks as context for the LLM
 3. **Duplicate detection** — embed records, find near-duplicates by vector similarity (catches paraphrased duplicates that exact-match misses)
 4. **Recommendation by similarity** — "users who liked this also liked..." based on embedding proximity rather than collaborative filtering
 5. **Image/video similarity search** — find visually similar products in an e-commerce catalog
@@ -787,7 +785,7 @@ LIMIT 10;
 ### DE's perspective
 
 **Role: Target — write embedding pipelines.** As a DE:
-- Batch-compute embeddings in Spark (apply an embedding model as a UDF or use a distributed inference framework)
+- Batch-compute embeddings in Spark (apply an embedding model as a UDF — User-Defined Function — or use a distributed inference framework)
 - Write embedding vectors + metadata to a vector DB via bulk upsert
 - Schedule nightly re-embedding runs when the model or corpus changes
 
@@ -803,11 +801,11 @@ LIMIT 10;
 
 ### What it is
 
-Not a database in the traditional sense — an object store (S3, GCS, Azure Blob) holding data files in open formats (Parquet, ORC, Avro), organized by a table format (Apache Iceberg, Delta Lake, Apache Hive) that provides a schema, partitioning, and ACID-like semantics. Query engines (Spark, Trino, Athena, Flink) read and write these files directly.
+Not a database in the traditional sense — an object store (S3, GCS, Azure Blob — cloud storage services that hold files cheaply at any scale) holding data files in open formats (Parquet, ORC, Avro), organized by a table format (Apache Iceberg, Delta Lake, Apache Hive) that provides a schema, partitioning, and ACID-like semantics. Query engines (Spark, Trino, Athena, Flink) read and write these files directly.
 
 ### Why it exists
 
-Managed warehouses (Snowflake, Redshift) are expensive at scale and lock data inside a proprietary format. Data lakes store data as open files on cheap object storage — any engine can read them. The table format layer (Iceberg, Delta) adds the missing pieces: consistent reads, MERGE support, schema evolution, and time-travel queries.
+Managed warehouses (Snowflake, Redshift) are expensive at scale and lock data inside a proprietary format. Data lakes store data as open files on cheap object storage — any engine can read them. The table format layer (Iceberg, Delta) adds the missing pieces: consistent reads, MERGE support, schema evolution, and time-travel queries (query what the table looked like at a past point in time).
 
 ### How it works
 
@@ -832,7 +830,7 @@ Files are stored in S3 as Parquet. The table format maintains metadata (manifest
 
 ### DE's perspective
 
-**Role: Primary target for pipeline output.** This is where most pipeline output lands. See [Choosing Your Data Platform](../../../platform-engineering/choosing-your-data-platform/README.md) for the full treatment.
+**Role: Primary target for pipeline output.** This is where most pipeline output lands.
 
 ---
 
@@ -893,7 +891,7 @@ What is the primary question my system needs to answer?
 
 ## CAP Theorem Quick Reference
 
-CAP theorem: a distributed system can guarantee at most 2 of: **Consistency** (all nodes see the same data), **Availability** (every request gets a response), **Partition tolerance** (system continues despite network splits). Since partition tolerance is mandatory in distributed systems, the choice is C vs A.
+CAP theorem: a distributed system can guarantee at most 2 of these 3 properties: **Consistency** (all nodes see the same data at the same time), **Availability** (every request gets a response), **Partition tolerance** (system continues despite network splits between nodes). Since partition tolerance is mandatory in any distributed system (network splits will happen), the real choice is between C and A: do you prioritize returning correct data or returning a response?
 
 | Type | CAP choice | What that means in practice |
 |---|---|---|
@@ -936,9 +934,9 @@ CAP theorem: a distributed system can guarantee at most 2 of: **Consistency** (a
 
 ## Further Reading
 
-- [Choosing Your Data Platform](../../platform-engineering/choosing-your-data-platform/README.md) — warehouse vs lake detailed decision guide
-- [Pipeline Compute Options](../../platform-engineering/pipeline-compute-options/README.md) — the compute layer that sits alongside these storage types
-- [CAP Theorem](../cap-theorem/README.md) — deep-dive on consistency models
-- [Consistency Models](../consistency-models/README.md) — eventual vs strong vs causal consistency
-- [Kafka Ingestion Patterns](../../kafka/ingestion-patterns/README.md) — streaming data into these storage types from Kafka
-- [Merge Strategies](../../pipeline-patterns/merge-strategies/README.md) — how to load data into these targets correctly
+- Choosing Your Data Platform — warehouse vs lake detailed decision guide
+- Pipeline Compute Options — the compute layer that sits alongside these storage types
+- CAP Theorem — deep-dive on consistency models
+- Consistency Models — eventual vs strong vs causal consistency
+- Kafka Ingestion Patterns — streaming data into these storage types from Kafka
+- Merge Strategies — how to load data into these targets correctly

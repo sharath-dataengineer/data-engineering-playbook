@@ -6,12 +6,12 @@
 
 **What this is.** Landing tables are the shapes raw and modeled data takes once it lands in the warehouse. This chapter walks through eight patterns — event log, periodic snapshot, SCD1, SCD2, raw landing, CDC changelog, accumulating snapshot, and factless fact — using one e-commerce domain so the tradeoffs are directly comparable.
 
-**Who it's for.** data engineers, analytics engineers, platform/architecture leads, and engineers preparing for senior/staff data-engineering interviews.
+**Who it's for.** Mid-level data engineers, analytics engineers, platform/architecture leads, and engineers preparing for senior/staff data-engineering interviews.
 
 **What you'll take away.** By the end you'll be able to:
 - Pick the right table pattern for a given question (state-at-a-point vs. what-happened vs. point-in-time history vs. process-duration analytics).
-- Recognize the mutability, history, partitioning, and uniqueness profile of each pattern, and how they layer together off a single CDC source.
-- Avoid the silent-corruption anti-patterns, such as append-only on an entity table or an accumulating snapshot written append-only instead of by MERGE.
+- Recognize the mutability (whether rows can be changed after writing), history, partitioning, and uniqueness profile of each pattern, and how they layer together off a single CDC source.
+- Avoid the silent-corruption anti-patterns, such as append-only on an entity table or an accumulating snapshot written append-only instead of by MERGE (a statement that inserts new rows and updates existing ones in one operation).
 
 ---
 
@@ -20,9 +20,9 @@
 - **Append-Only Event Log** — one row per event, never updated. Every thing that happened is preserved forever. Right for transactions, clicks, audit trails.
 - **Periodic Snapshot** — full state of all entities on a fixed schedule. Right when "what was the state on date X?" is the question and recomputing it from events would be expensive.
 - **Current State (SCD Type 1)** — one row per entity, always the latest. Right for reference data where history has no analytical value.
-- **SCD Type 2 History Table** — one row per version of each entity, with effective dates. Right when point-in-time accuracy matters — "what was this customer's tier when they took this loan?"
-- **Raw Landing / Staging** — data exactly as received, no transformation. Right as a reprocessing safety net and audit trail.
-- **CDC / Changelog Table** — raw insert/update/delete events from a source database. Right as a durable buffer between capture and apply.
+- **SCD Type 2 History Table** — SCD stands for Slowly Changing Dimension. One row per version of each entity, with effective dates. Right when point-in-time accuracy matters — "what was this customer's tier when they took this loan?"
+- **Raw Landing / Staging** — data exactly as received from the source, no transformation. Right as a reprocessing safety net and audit trail.
+- **CDC / Changelog Table** — CDC stands for Change Data Capture. These are raw insert/update/delete events from a source database. Right as a durable buffer between capture and apply.
 - **Accumulating Snapshot** — one row per business process instance, updated at each milestone. Right for pipeline duration analytics: "average time from order placed to shipped."
 - **Factless Fact / Coverage Table** — records that a relationship existed, no measures. Right when the denominator (who was eligible?) is what you're missing.
 
@@ -40,7 +40,7 @@ An e-commerce platform. Customers place orders; orders move through stages (plac
 
 ### What it is
 
-Every event that occurs is written as a new row. Existing rows are never updated or deleted. The table grows monotonically — it is the permanent record of what happened.
+Every event that occurs is written as a new row. Existing rows are never updated or deleted. The table grows monotonically (always increasing, never shrinking) — it is the permanent record of what happened.
 
 ### Schema shape
 
@@ -95,8 +95,8 @@ WHERE auth.event_date BETWEEN '2024-06-01' AND '2024-06-30';
 
 ### When to avoid
 
-- Entity tables (customers, products) where analysts want "current state" — append creates one row per load cycle per customer, requiring dedup on every read.
-- Tables queried by entity ID without a time filter — no partition pruning means full table scans.
+- Entity tables (customers, products) where analysts want "current state" — append creates one row per load cycle per customer, requiring dedup (removing duplicates) on every read.
+- Tables queried by entity ID without a time filter — no partition pruning (the query engine skipping irrelevant date partitions) means full table scans.
 
 ---
 
@@ -104,7 +104,7 @@ WHERE auth.event_date BETWEEN '2024-06-01' AND '2024-06-30';
 
 ### What it is
 
-The complete state of all entities, captured at regular intervals. Every day (or hour), the ETL writes one row per entity reflecting the current state of that entity at that moment. Each snapshot date is one partition. Querying any past date is a single partition scan.
+The complete state of all entities, captured at regular intervals. Every day (or hour), the ETL (Extract, Transform, Load — the process that moves data from source to warehouse) writes one row per entity reflecting the current state of that entity at that moment. Each snapshot date is one partition. Querying any past date is a single partition scan.
 
 ### Schema shape
 
@@ -162,7 +162,7 @@ Plan cold archival after 2–3 years. Use partition pruning aggressively — nev
 
 ### What it is
 
-One row per entity. Always the latest version. When an entity changes, the existing row is overwritten (upserted). No history is kept.
+One row per entity. Always the latest version. When an entity changes, the existing row is overwritten (upserted — inserted if new, updated if it already exists). No history is kept.
 
 ### Schema shape
 
@@ -228,7 +228,7 @@ The credit risk team asks: *"What was CUST-101's risk tier at the time of loan o
 
 With SCD1, `risk_tier = high` (the current value overwrote everything). The origination context is gone.
 
-With SCD2, the point-in-time join retrieves the correct version:
+With SCD2, the point-in-time join (a join that filters to the version of a row that was active at a specific moment in time) retrieves the correct version:
 
 ```sql
 SELECT
@@ -245,9 +245,7 @@ JOIN analytics.dim_customer_scd2 c
 ### When to avoid
 
 - When analysts don't need point-in-time joins — every query adds date-range conditions; this is wasted complexity on stable reference data.
-- High-cardinality entities with very frequent changes — the table grows large and requires partitioning on `effective_start_ts` or `is_current` for query performance.
-
-See [Merge Strategies](../merge-strategies/README.md) for the SCD2 upsert implementation in SQL, Delta, and Iceberg.
+- High-cardinality entities (entities with millions of distinct values) with very frequent changes — the table grows large and requires partitioning on `effective_start_ts` or `is_current` for query performance.
 
 ---
 
@@ -255,7 +253,7 @@ See [Merge Strategies](../merge-strategies/README.md) for the SCD2 upsert implem
 
 ### What it is
 
-Data written exactly as received from the source — no transformation, no deduplication, no schema enforcement beyond parsing. Landing metadata columns (`_load_ts`, `_source_file`, `_batch_id`) are appended. This is the pipeline's audit trail and reprocessing source.
+Data written exactly as received from the source — no transformation, no deduplication, no schema enforcement beyond parsing. The bronze layer is the first stop in a layered data architecture, where data is stored in its rawest form before any cleaning or modeling. Landing metadata columns (`_load_ts`, `_source_file`, `_batch_id`) are appended to track when and how data arrived. This is the pipeline's audit trail and reprocessing source.
 
 ### Schema shape
 
@@ -283,7 +281,7 @@ A data engineering team ingests a daily pricing feed from a third-party vendor. 
 
 **Without raw landing:** they must request a re-send from the vendor, wait for it, and hope the vendor still has the historical file. If the vendor purges daily feeds, that data is permanently lost.
 
-Raw landing tables make transformation bugs recoverable. They also make SLA auditing possible: "prove that the vendor's feed arrived on time every day this quarter" is answered by a query on `_load_ts` per `_load_date`.
+Raw landing tables make transformation bugs recoverable. They also make SLA (Service Level Agreement — a commitment on delivery timing) auditing possible: "prove that the vendor's feed arrived on time every day this quarter" is answered by a query on `_load_ts` per `_load_date`.
 
 ### Key properties
 
@@ -297,7 +295,7 @@ Raw landing tables make transformation bugs recoverable. They also make SLA audi
 
 ### What it is
 
-Raw change data capture events — inserts, updates, and deletes — captured from a source database's transaction log (via Debezium, AWS DMS, or similar) and stored as-is. Each row is a change event, not the current state of the entity. Downstream processes consume these events and apply them to target tables via MERGE.
+CDC stands for Change Data Capture — a technique that reads a database's internal transaction log (the ordered record of every write the database performs) to capture every insert, update, and delete as it happens. Raw CDC events are stored as-is in a changelog table. Each row is a change event, not the current state of the entity. Downstream processes consume these events and apply them to target tables via MERGE.
 
 ### Schema shape
 
@@ -307,7 +305,7 @@ Raw change data capture events — inserts, updates, and deletes — captured fr
 | `before` | STRUCT | Row values before the change (NULL for inserts) |
 | `after` | STRUCT | Row values after the change (NULL for deletes) |
 | `event_ts` | TIMESTAMP | When the change occurred in the source DB |
-| `source_lsn` | BIGINT | Log sequence number — ordering guarantee |
+| `source_lsn` | BIGINT | Log Sequence Number — a unique, ever-increasing number that guarantees ordering of changes |
 | `_load_date` | DATE | **Partition column** |
 
 ### Sample rows
@@ -327,7 +325,7 @@ An e-commerce company's orders live in PostgreSQL. The analytics lake needs to m
 
 **The polling problem:** querying `WHERE updated_ts > last_watermark` catches inserts and updates, but misses deletes — a deleted row has no `updated_ts` to scan. You can't detect a delete from a polling query.
 
-**The CDC solution:** Debezium listens to PostgreSQL's Write-Ahead Log. Every INSERT, UPDATE, and DELETE produces a structured event, published to Kafka, and landed in `cdc_orders_raw` partitioned by `_load_date`. A Flink job reads the changelog table and applies:
+**The CDC solution:** Debezium (an open-source CDC tool) listens to PostgreSQL's Write-Ahead Log (the database's internal record of all changes). Every INSERT, UPDATE, and DELETE produces a structured event, published to Kafka (a distributed message queue), and landed in `cdc_orders_raw` partitioned by `_load_date`. A Flink job (a stream processing job) reads the changelog table and applies:
 
 ```python
 def apply_cdc(batch_df, batch_id):
@@ -350,8 +348,6 @@ The CDC table is the durable buffer: if the Flink job is down for 2 hours, it re
 
 30–90 days. Long enough to reprocess the target table on logic change or failure. Then purge (CDC tables grow fast on high-write sources).
 
-See [Merge Strategies — Full Sync](../merge-strategies/README.md) for the complete CDC consumer pattern.
-
 ---
 
 ## Pattern 7: Accumulating Snapshot Fact Table
@@ -365,7 +361,7 @@ One row per business process instance — one row per order, one row per loan ap
 | Column | Type | Notes |
 |---|---|---|
 | `order_id` | STRING | **Primary key** — unique |
-| `customer_id` | STRING | FK |
+| `customer_id` | STRING | FK (Foreign Key — a reference to a row in another table) |
 | `placed_ts` | TIMESTAMP | When the order was placed |
 | `confirmed_ts` | TIMESTAMP | When payment was confirmed; NULL until reached |
 | `shipped_ts` | TIMESTAMP | When package left warehouse; NULL until reached |
@@ -421,7 +417,7 @@ GROUP BY warehouse_id
 ORDER BY avg_hours DESC;
 ```
 
-The accumulating snapshot makes pipeline duration analytics fast and simple. The cost: each milestone triggers a MERGE on the existing row, requiring Delta or Iceberg for ACID support. This is not an append-only pattern.
+The accumulating snapshot makes pipeline duration analytics fast and simple. The cost: each milestone triggers a MERGE on the existing row, requiring Delta or Iceberg (table formats that support updating and deleting individual rows, unlike plain Parquet) for ACID (Atomicity, Consistency, Isolation, Durability — database guarantees that updates either fully complete or fully roll back) support. This is not an append-only pattern.
 
 ### Key distinction from Event Log
 
@@ -438,7 +434,7 @@ The accumulating snapshot makes pipeline duration analytics fast and simple. The
 
 ### What it is
 
-Records that a relationship or event existed — no numeric measures. The fact is the occurrence or eligibility itself, not an amount or count. Keys only, plus a date.
+Records that a relationship or event existed — no numeric measures. The fact is the occurrence or eligibility itself, not an amount or count. The table contains only keys (references to other tables) plus a date. It answers the question "who was part of this?" rather than "how much?"
 
 ### Schema shape
 

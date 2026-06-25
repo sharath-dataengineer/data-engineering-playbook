@@ -4,12 +4,12 @@
 
 ## About This Chapter
 
-**What this is.** Idempotency means running a pipeline once or ten times produces the exact same result in the target table. This chapter shows the concrete patterns that make loads safely re-runnable across RDBMS, Hive/Parquet, Delta Lake, and Apache Iceberg.
+**What this is.** Idempotency (the property of producing the same result no matter how many times you run something) means running a pipeline once or ten times produces the exact same result in the target table. This chapter shows the concrete patterns that make loads safely re-runnable across RDBMS (relational databases like PostgreSQL), Hive/Parquet, Delta Lake, and Apache Iceberg.
 
-**Who it's for.** data engineers, analytics engineers, platform/architecture leads, and engineers preparing for senior/staff data-engineering interviews.
+**Who it's for.** Mid-level data engineers, analytics engineers, platform/architecture leads, and engineers preparing for senior/staff data-engineering interviews.
 
 **What you'll take away.** By the end you'll be able to:
-- Make retries and backfills safe using upsert/MERGE keyed on a business key, or DELETE-then-insert wrapped in a transaction.
+- Make retries and backfills safe using upsert/MERGE keyed on a business key (the unique identifier from the source system, such as `customer_id`), or DELETE-then-insert wrapped in a transaction.
 - Apply the right mechanism per engine: `ON CONFLICT`, dynamic partition overwrite, Delta `MERGE`/`replaceWhere`, and Iceberg `MERGE INTO`/`overwritePartitions()`.
 - Avoid the classic failure modes — static partition overwrite wiping a table, missing partition filters, and trusting upstream dedup.
 
@@ -18,11 +18,11 @@
 ## TL;DR
 
 - **Idempotent pipeline:** running it once or ten times produces the exact same result in the target table.
-- **Why it matters:** retries happen. Orchestrators restart failed jobs. Backfills re-process old dates. Without idempotency, every retry creates duplicates or corrupts state.
-- **RDBMS:** use `INSERT ... ON CONFLICT DO UPDATE` (upsert); for partitioned facts, `DELETE` the partition first then re-insert.
+- **Why it matters:** retries happen. Orchestrators (tools like Airflow or Dagster that schedule and restart jobs) restart failed jobs. Backfills re-process old dates. Without idempotency, every retry creates duplicates or corrupts state.
+- **RDBMS:** use `INSERT ... ON CONFLICT DO UPDATE` (upsert — insert if new, update if exists); for partitioned facts, `DELETE` the partition first then re-insert.
 - **Hive / Parquet:** no native MERGE — use dynamic partition overwrite so only the affected partition is replaced.
-- **Delta Lake:** `MERGE INTO` on the business key gives fully ACID upsert; `replaceWhere` for partition-scoped overwrites.
-- **Apache Iceberg:** same `MERGE INTO` syntax; each run creates a new snapshot — re-running lands in the same snapshot state.
+- **Delta Lake:** `MERGE INTO` on the business key gives fully ACID (Atomic, Consistent, Isolated, Durable — meaning writes are all-or-nothing and leave the table in a valid state) upsert; `replaceWhere` for partition-scoped overwrites.
+- **Apache Iceberg:** same `MERGE INTO` syntax; each run creates a new snapshot (a point-in-time version of the table) — re-running lands in the same snapshot state.
 
 ---
 
@@ -58,7 +58,7 @@ The retry loop is only safe if the pipeline is idempotent. Otherwise each pass t
 
 Relational databases support `UPSERT` — a single statement that inserts a new row if the key doesn't exist, or updates the existing row if it does. In PostgreSQL this is `INSERT ... ON CONFLICT DO UPDATE`. Because the operation is keyed on the business key, running it twice with the same data produces the same result.
 
-For partitioned facts (date-range tables), the pattern is: **delete the target partition, then re-insert**. Both steps together are idempotent — deleting a partition that was already deleted is a no-op, and inserting the same rows again gives the same partition.
+For partitioned facts (tables split into date-range segments), the pattern is: **delete the target partition, then re-insert**. Both steps together are idempotent — deleting a partition that was already deleted is a no-op (does nothing), and inserting the same rows again gives the same partition.
 
 ---
 
@@ -130,7 +130,7 @@ WHERE order_date = '2024-06-18';
 
 ### Theory
 
-Hive (and plain Parquet tables on S3 managed by a Hive metastore) does **not** support `MERGE INTO`. There is no native upsert. Idempotency is achieved by **overwriting** rather than appending:
+Hive (and plain Parquet tables on S3 managed by a Hive metastore — a catalog service that tracks table definitions and partition locations) does **not** support `MERGE INTO`. There is no native upsert. Idempotency is achieved by **overwriting** rather than appending:
 
 - **Non-partitioned table:** overwrite the entire table each run. Safe only when you recompute the full table from source on every run.
 - **Partitioned table:** use **dynamic partition overwrite** (`spark.sql.sources.partitionOverwriteMode=dynamic`). Spark replaces only the partitions present in the new DataFrame — other partitions are untouched.
@@ -218,7 +218,7 @@ fact_df.write \
 
 ### Theory
 
-Delta Lake adds an **ACID transaction log** on top of Parquet files. Every write is a logged transaction, and `MERGE INTO` is a first-class operation. Because `MERGE` is keyed on a business key, re-running it with the same source data is naturally idempotent — matched rows get updated to the same values, unmatched rows get inserted once.
+Delta Lake adds an **ACID transaction log** (a record of every change made to the table, enabling all-or-nothing writes) on top of Parquet files. Every write is a logged transaction, and `MERGE INTO` is a first-class operation. Because `MERGE` is keyed on a business key, re-running it with the same source data is naturally idempotent — matched rows get updated to the same values, unmatched rows get inserted once.
 
 For partitioned tables, adding a partition filter to the merge condition prevents Delta from scanning the entire table, which is important for performance at scale.
 
@@ -309,7 +309,7 @@ target.alias("t") \
 
 ### Theory
 
-Apache Iceberg manages tables as an immutable sequence of **snapshots**. Every write — including a `MERGE` — creates a new snapshot that points to new data files. Old snapshots are retained for time-travel queries. Re-running a `MERGE` with the same source data produces a new snapshot, but the snapshot's data is identical to the previous one.
+Apache Iceberg manages tables as an immutable (never-modified-in-place) sequence of **snapshots** (each write creates a new version of the table rather than changing the existing one). Every write — including a `MERGE` — creates a new snapshot that points to new data files. Old snapshots are retained for time-travel queries (letting you query the table as it looked at a previous point in time). Re-running a `MERGE` with the same source data produces a new snapshot, but the snapshot's data is identical to the previous one.
 
 Iceberg supports `MERGE INTO` natively via Spark SQL (Spark 3.x with the Iceberg catalog). For simple partition replacements, `writeTo(...).overwritePartitions()` is the Iceberg equivalent of Delta's `replaceWhere`.
 
@@ -431,7 +431,7 @@ spark.sql("""
 
 ## Further Reading
 
-- [Exactly-Once Semantics in Kafka](../../kafka/exactly-once/README.md) — source-side idempotency
-- [Delta Lake](../../lakehouse/delta/README.md) — transaction log and ACID guarantees
-- [Apache Iceberg](../../lakehouse/iceberg/README.md) — snapshot model and partition evolution
-- [Data Quality Gates](../../data-quality/README.md) — how to validate idempotent loads didn't produce dupes
+- Exactly-Once Semantics in Kafka — source-side idempotency
+- Delta Lake — transaction log and ACID guarantees
+- Apache Iceberg — snapshot model and partition evolution
+- Data Quality Gates — how to validate idempotent loads didn't produce dupes

@@ -4,25 +4,25 @@
 
 ## About This Chapter
 
-**What this is.** An architecture review is the forum where a data-platform design is pressure-tested while it's still cheap to change. This chapter covers how to run one as a risk-reduction transaction rather than an approval ceremony.
+**What this is.** An architecture review is a structured meeting where a data-platform design is stress-tested while it is still cheap to change. Think of it as a risk-reduction exercise, not a rubber-stamp approval. This chapter explains how to run one effectively.
 
-**Who it's for.** Platform/architecture leads, engineering managers/tech leads, data engineers, and engineers preparing for senior/staff data-engineering interviews.
+**Who it's for.** Platform and architecture leads, engineering managers, tech leads, mid-level data engineers, and engineers preparing for senior or staff data-engineering interviews.
 
 **What you'll take away.** By the end you'll be able to:
-- Gate a review on a numeric load profile and classify decisions by reversibility (one-way vs two-way doors) so the hour goes to the irreversible choices.
-- Trace the failure modes that demos hide — small-files/shuffle math, dual-write divergence, missing backfill paths, and absent cost models.
-- Drive every review to a durable output: a de-risked design plus an ADR recording rejected alternatives and revisit triggers.
+- Require a numeric load profile (concrete numbers like events per second and GB per day) before any review starts, and classify decisions by how hard they are to undo — so the meeting focuses on the decisions that are expensive to reverse.
+- Trace the failure modes that demos hide — small files, shuffle cost, dual-write divergence (when two systems are written separately and can get out of sync), missing backfill paths, and absent cost models.
+- Drive every review to a durable output: a de-risked design plus an ADR (Architecture Decision Record — a short written document that records what was decided, what was rejected, and why) that captures rejected alternatives and when to revisit.
 
 ---
 
-An architecture review is the most leveraged hour a principal engineer spends all week. It is the only point in the lifecycle where a design is still cheap to change and expensive mistakes are still hypothetical. Done well, it converts a vague RFC into a load-bearing decision the team can build against for two years. Done badly, it becomes a rubber-stamp meeting where the loudest person ships the riskiest design. This chapter is about running them so they do the former.
+An architecture review is the most leveraged hour a principal engineer spends all week. It is the only point in the lifecycle where a design is still cheap to change and expensive mistakes are still hypothetical. Done well, it converts a vague RFC (Request for Comments — a design proposal document) into a load-bearing decision the team can build against for two years. Done badly, it becomes a rubber-stamp meeting where the loudest person ships the riskiest design. This chapter is about running them so they do the former.
 
 ## TL;DR
 
-- A review is a **risk-reduction transaction**, not an approval ceremony. The output is a list of de-risked assumptions plus an [ADR](../decision-records/README.md), not a thumbs-up.
+- A review is a **risk-reduction exercise**, not an approval ceremony. The output is a list of de-risked assumptions plus an ADR (Architecture Decision Record), not a thumbs-up.
 - Review the **failure modes and the reversibility of the decision**, not the happy path. Happy paths demo fine; they never page you at 3am.
 - Force the author to state the **load profile in numbers** (events/sec, GB/day, p99 read latency, cardinality) before anyone debates technology. Most arguments dissolve once the numbers are on the table.
-- Separate **one-way doors from two-way doors** (Bezos's framing). Spend 80% of the review on the one-way doors — schema contracts, partition keys, storage format, the streaming/batch boundary — because those are the ones you cannot cheaply undo.
+- Separate **one-way doors from two-way doors** (a framing popularized by Amazon leadership). One-way doors are decisions that are difficult or costly to undo — like a partition key or a storage format. Two-way doors are easy to reverse — like instance sizing or dashboard tool choice. Spend 80% of the review on the one-way doors because those are the ones you cannot cheaply undo.
 - A review without a **written record of the rejected alternatives** is worthless six months later when someone asks "why didn't we just use Postgres?"
 - The reviewer's job is to **surface the questions the author didn't think to ask**, not to redesign the system in the room.
 
@@ -30,7 +30,7 @@ An architecture review is the most leveraged hour a principal engineer spends al
 
 Concrete scenario. A team proposes a "real-time customer activity" pipeline: Kafka → Spark Structured Streaming → a Delta table queried by a dashboard. The RFC is two pages, the diagram is clean, the demo works on 1,000 events. It ships.
 
-Three months later: the activity topic is doing 40k events/sec at peak, the streaming job is partitioned by `event_date` only, so every micro-batch writes ~3,000 files of ~2 MB each into the same partition. The dashboard now scans 2.6 million small files, p99 query latency is 90 seconds, and the `OPTIMIZE` job that was supposed to compact them can't keep up because it competes with the writer for the same partition's metadata. The streaming checkpoint has also silently been retaining 14 days of `_delta_log` because nobody set `delta.logRetentionDuration`. Storage cost on the metadata alone is now a line item.
+Three months later: the activity topic is doing 40k events/sec at peak, the streaming job is partitioned by `event_date` only, so every micro-batch writes ~3,000 files of ~2 MB each into the same partition. The dashboard now scans 2.6 million small files, p99 query latency is 90 seconds, and the `OPTIMIZE` job that was supposed to compact (merge small files into larger ones) them can't keep up because it competes with the writer for the same partition's metadata. The streaming checkpoint (the saved progress record Spark uses to resume a streaming job) has also silently been retaining 14 days of `_delta_log` (Delta Lake's transaction log) because nobody set `delta.logRetentionDuration`. Storage cost on the metadata alone is now a line item.
 
 Every one of those failures was visible in the original design — *if anyone had asked for the numbers and traced the file-count math*. None of them showed up in the demo. The architecture review is the forum that exists specifically to catch the gap between "works on my laptop" and "survives 40k events/sec for a year." The cost of catching it at review time is one engineer-hour. The cost of catching it in production is a re-platforming project and an exec asking why the dashboard is down.
 
@@ -57,13 +57,13 @@ The non-obvious mechanics:
 
 1. **Async pre-read does most of the work.** If reviewers read the RFC cold in the meeting, you get reaction, not analysis. The doc should circulate 48 hours ahead with reviewers leaving inline comments. By meeting time, the trivial objections ("you spelled the topic name wrong") are resolved and only the contested risks remain.
 
-2. **The author owns the numbers.** A review can't start until the RFC contains the load profile. I treat "we expect moderate volume" as an automatic send-back. Moderate is not a number.
+2. **The author owns the numbers.** A review can't start until the RFC contains the load profile. "We expect moderate volume" is not a number — that RFC goes back.
 
 3. **The decision is classified by reversibility before it's debated.** A two-way door (which compute instance type, which dashboard tool) gets minutes. A one-way door (partition key, event schema, the batch/streaming boundary, the system of record) gets the hour. The most common review failure is spending equal time on everything.
 
 ### One-way vs two-way doors
 
-The reversibility cost is roughly the blast radius of changing the decision after it has dependents:
+The reversibility cost is roughly the blast radius (how many things break) of changing the decision after it has dependents:
 
 ```
 cost_to_reverse ≈ (# downstream consumers) × (data already written under old design) × (contract rigidity)
@@ -77,31 +77,31 @@ This is the part engineers get wrong, ranked by how often I see it.
 
 ### 1. Reviewing the diagram instead of the contracts
 
-Boxes and arrows lie. The arrow labeled "Kafka → Spark" hides every question that actually matters: What's the schema and who owns it? Is it Avro with a registry and `BACKWARD` compatibility enforced, or JSON that anyone can break? What's the partitioning key on the topic, and does it match the join key downstream (or does every join trigger a full shuffle)? What's the delivery guarantee — at-least-once with idempotent writes, or are you assuming exactly-once you didn't configure?
+Boxes and arrows lie. The arrow labeled "Kafka → Spark" hides every question that actually matters: What's the schema and who owns it? Is it Avro (a compact binary data format) with a schema registry (a central service that enforces schema compatibility) and `BACKWARD` compatibility enforced (meaning new schema versions can read data written by older versions), or is it plain JSON that anyone can break? What's the partitioning key on the topic, and does it match the join key downstream — or does every join trigger a full shuffle (a costly operation where all data is redistributed across workers)? What's the delivery guarantee — at-least-once with idempotent writes (safe to replay without producing duplicates), or are you assuming exactly-once behavior you didn't configure?
 
-The discipline: for every arrow, demand the **contract**. Schema, ownership, compatibility policy, delivery semantics, and the SLA. A review that approves a diagram without contracts has approved nothing. See [event design](../../kafka/event-design/README.md) and [exactly-once](../../kafka/exactly-once/README.md) for the contract details worth interrogating.
+The discipline: for every arrow, demand the **contract**. Schema, ownership, compatibility policy, delivery semantics, and the SLA (the agreed-upon performance or freshness guarantee). A review that approves a diagram without contracts has approved nothing.
 
 ### 2. Not tracing the small-files / shuffle math
 
-The single most predictable data-engineering failure is small files, and it is fully computable at review time. If a streaming job writes every 30 seconds with 200 shuffle partitions, that's `200 files × 2 × 60 × 24 = 576,000` files/day per partition column value before compaction. Ask the author to do this multiplication in the room. If they can't, they haven't designed the write path; they've drawn it.
+The single most predictable data-engineering failure is small files (too many tiny files that make queries slow because the engine spends more time opening files than reading data), and it is fully computable at review time. If a streaming job writes every 30 seconds with 200 shuffle partitions, that's `200 files × 2 × 60 × 24 = 576,000` files/day per partition column value before compaction. Ask the author to do this multiplication in the room. If they can't, they haven't designed the write path; they've drawn it.
 
-Same for shuffle. If the design joins a 5 TB fact against a 5 TB dimension on a non-colocated key, that's a 10 TB shuffle every run. Ask whether the dimension can be broadcast (see [broadcast-join](../../spark-internals/broadcast-join/README.md)), whether the tables can be bucketed on the join key, or whether [AQE](../../spark-internals/aqe/README.md) skew handling is even enabled. These are review questions, not tuning questions — the *structure* of the join is set at design time.
+Same for shuffle. If the design joins a 5 TB fact against a 5 TB dimension on a non-colocated key (a key not already grouped together on disk), that's a 10 TB shuffle every run. Ask whether the dimension can be broadcast (sent in full to every worker so no shuffle is needed), whether the tables can be bucketed on the join key (pre-sorted so the join avoids shuffling), or whether AQE (Adaptive Query Execution — Spark's runtime optimizer) skew handling is even enabled. These are review questions, not tuning questions — the *structure* of the join is set at design time.
 
 ### 3. Ignoring the boundary between streaming and batch
 
-The streaming/batch boundary is the most expensive one-way door in data platforms and the one teams cross most casually. "We'll make it real-time" usually means: a checkpoint to operate, watermark/late-data semantics to reason about, a stateful store to size, and an on-call rotation. Most "real-time" requirements are actually "fresh within 5 minutes," which a micro-batch every 2 minutes satisfies at a fraction of the operational cost. The review must force the question: *what is the actual freshness SLA, in minutes, and what does the business lose at 10 minutes vs 2?* If nobody can answer, you don't have a real-time requirement, you have a real-time aspiration. Push back. (Related: [event-driven-systems](../../distributed-systems/event-driven-systems/README.md).)
+The streaming/batch boundary is the most expensive one-way door in data platforms and the one teams cross most casually. "We'll make it real-time" usually means: a checkpoint to operate, watermark/late-data semantics (rules for how long to wait before assuming no more late events arrive) to reason about, a stateful store to size, and an on-call rotation. Most "real-time" requirements are actually "fresh within 5 minutes," which a micro-batch every 2 minutes satisfies at a fraction of the operational cost. The review must force the question: *what is the actual freshness SLA, in minutes, and what does the business lose at 10 minutes vs 2?* If nobody can answer, you don't have a real-time requirement, you have a real-time aspiration. Push back.
 
 ### 4. Hand-waving consistency and ordering
 
-When the design touches more than one storage system, the consistency model is a first-class review topic, not an implementation detail. "We write to Kafka and to the warehouse" — are those two writes atomic? (They aren't.) What happens when the second one fails? Is there a reconciliation job, or will the two systems silently diverge? The number of "data doesn't match" incidents that trace back to a dual-write nobody flagged at review is large. Make the author draw the failure case. See [consistency-models](../../distributed-systems/consistency-models/README.md) and [reconciliation](../../data-quality/reconciliation/README.md).
+When the design touches more than one storage system, the consistency model (the rules about which writes are visible when, and whether two systems can disagree) is a first-class review topic, not an implementation detail. "We write to Kafka and to the warehouse" — are those two writes atomic (either both succeed or neither does)? They aren't. What happens when the second one fails? Is there a reconciliation job, or will the two systems silently diverge? The number of "data doesn't match" incidents that trace back to a dual-write (writing to two systems independently without a transaction) nobody flagged at review is large. Make the author draw the failure case.
 
 ### 5. Backfill and reprocessing as an afterthought
 
-Every pipeline gets backfilled — because the logic had a bug, because a column was added, because a year of history is needed for a new model. If the design can only run forward, you've shipped a pipeline that can't be fixed. Review question: *how do we reprocess 90 days without double-counting and without taking the live path down?* The good answers are idempotent writes keyed on a natural+batch key, partition-overwrite (`replaceWhere` / dynamic partition overwrite), or Iceberg snapshot replacement. The bad answer is silence.
+Every pipeline gets backfilled — because the logic had a bug, because a column was added, because a year of history is needed for a new model. If the design can only run forward, you've shipped a pipeline that can't be fixed. Review question: *how do we reprocess 90 days without double-counting and without taking the live path down?* The good answers are idempotent writes keyed on a natural+batch key (writes that are safe to replay because the key uniquely identifies each record), partition-overwrite (`replaceWhere` / dynamic partition overwrite — replacing just the affected partitions rather than the whole table), or Iceberg snapshot replacement (using Iceberg's time-travel capability to swap in a reprocessed version). The bad answer is silence.
 
 ### 6. The cost model is missing
 
-A design without a cost estimate is a blank check. I ask for a back-of-envelope: GB scanned per query × queries/day × $/TB, plus compute hours × instance cost, plus storage growth/month. It doesn't need to be precise; it needs to exist, because an order-of-magnitude error (a full-scan dashboard, an un-pruned partition scheme) is usually visible in the estimate. Cost is an architecture property, not a billing surprise. See [cost-attribution](../../finops/cost-attribution/README.md) and [capacity-planning](../../finops/capacity-planning/README.md).
+A design without a cost estimate is a blank check. Ask for a back-of-envelope: GB scanned per query × queries/day × $/TB, plus compute hours × instance cost, plus storage growth/month. It doesn't need to be precise; it needs to exist, because an order-of-magnitude error (a full-scan dashboard, an un-pruned partition scheme) is usually visible in the estimate. Cost is an architecture property, not a billing surprise.
 
 ## Worked example
 
@@ -152,7 +152,7 @@ files_per_bucket_day = files_per_day_flat / 64
 print(files_per_bucket_day)        # 720 -> compactable; readers prune by bucket
 ```
 
-The Iceberg write + maintenance config that makes the chosen design hold up, which the review should explicitly approve:
+The Iceberg write and maintenance config that makes the chosen design hold up — this is what the review should explicitly approve:
 
 ```sql
 ALTER TABLE analytics.customer_activity SET TBLPROPERTIES (
@@ -169,7 +169,7 @@ CALL catalog.system.rewrite_data_files(
 );
 ```
 
-The corresponding Spark job knobs the review checks are set (not defaults):
+The corresponding Spark job settings the review checks are set (not left at defaults):
 
 ```python
 spark.conf.set("spark.sql.adaptive.enabled", "true")
@@ -189,9 +189,9 @@ Patterns specific to running architecture reviews, not generic engineering advic
 
 - **The pre-read gate.** No load profile, no review. Bounce the doc back automatically. This single rule eliminates most of the low-value debate, because half of bad designs don't survive contact with their own numbers.
 - **Reviewer pre-assignment by failure domain.** Assign reviewers to *risks*, not to "the design." One reviewer owns the schema/contract question, one owns cost, one owns the operational/on-call burden. Diffuse responsibility ("everyone please review") produces shallow reviews where everyone assumes someone else checked the hard part.
-- **Time-box by reversibility, in the agenda.** Literally write on the agenda: "Partition key — 25 min. Instance type — 3 min." Make the allocation visible so the room doesn't bikeshed the easy stuff.
+- **Time-box by reversibility, in the agenda.** Literally write on the agenda: "Partition key — 25 min. Instance type — 3 min." Make the allocation visible so the room doesn't bikeshed (spend too much time debating low-stakes choices) the easy stuff.
 - **The "draw the failure" rule.** For any external dependency or dual-write, the author must walk through what happens when it fails mid-operation. If they can't, that's the finding.
-- **Decisions ship with trigger conditions.** Every approval records what would invalidate it: "revisit if events/sec exceeds 60k, if monthly cost exceeds $X, or after any data-divergence incident." This turns the [ADR](../decision-records/README.md) into a living tripwire instead of a tombstone.
+- **Decisions ship with trigger conditions.** Every approval records what would invalidate it: "revisit if events/sec exceeds 60k, if monthly cost exceeds $X, or after any data-divergence incident." This turns the ADR into a living tripwire instead of a tombstone.
 - **A standing "boring default" menu.** Maintain a list of the org's blessed defaults (Iceberg + Glue catalog, Avro + registry, micro-batch over continuous, etc.). New designs justify *deviations* from the menu, which shrinks every review to "why are you different here?" — the only interesting question.
 
 ## Anti-patterns & failure modes
@@ -202,12 +202,12 @@ Patterns specific to running architecture reviews, not generic engineering advic
 | Redesign-in-the-room | Reviewers propose a brand-new architecture during the meeting; author leaves demoralized with no decision | Reviewer's job is to surface questions, not author a competing design; take big alternatives offline |
 | No load profile | "Should scale fine"; later, p99 latency and small-file blowups in prod | Hard gate: numbers in the doc or no review |
 | All decisions weighted equally | 40 min on instance types, 5 min on the partition key | Classify one-way vs two-way doors up front; time-box accordingly |
-| Decisions with no owner of the record | Six months later: "why did we choose this?" — nobody knows | Output is always an [ADR](../decision-records/README.md) with context and tradeoffs, not a Slack thumbs-up |
-| HiPPO override | Most senior person's preference wins regardless of the numbers | Decisions cite the load profile and cost estimate; opinions that contradict the data must say why |
+| Decisions with no owner of the record | Six months later: "why did we choose this?" — nobody knows | Output is always an ADR with context and tradeoffs, not a Slack thumbs-up |
+| HiPPO override (Highest Paid Person's Opinion wins) | Most senior person's preference wins regardless of the numbers | Decisions cite the load profile and cost estimate; opinions that contradict the data must say why |
 | Approving without operability | Design ships, then nobody can backfill / has no runbook / no alerting | Operability is a review line item: backfill story, on-call burden, failure visibility |
 | Review theater for two-way doors | Heavyweight process applied to trivially reversible config | Reversible decisions get a lightweight async sign-off, not a meeting |
 
-The most insidious failure mode is the **silent dual-write divergence** (anti-pattern #5 from the deep dive surfacing in prod): two systems written non-atomically, no reconciliation, and the discrepancy only discovered when a customer disputes a number. It never shows up in testing because both writes succeed in the happy path. The only place to catch it is the review, by forcing the author to draw the mid-write failure.
+The most insidious failure mode is the **silent dual-write divergence** (two systems written independently, no reconciliation, discrepancy only discovered when a customer disputes a number): it never shows up in testing because both writes succeed in the happy path. The only place to catch it is the review, by forcing the author to draw the mid-write failure.
 
 ## Decision guidance
 
@@ -239,7 +239,3 @@ What a principal says when defending how they run reviews:
 - [Decision Records](../decision-records/README.md) — the durable output of every review; how to record context and supersede cleanly.
 - [Technical Strategy](../technical-strategy/README.md) — how individual review decisions roll up into a coherent platform direction.
 - [Roadmaps](../roadmaps/README.md) — sequencing the one-way-door decisions so you don't paint the platform into a corner.
-- [Event Design](../../kafka/event-design/README.md) and [Exactly-Once](../../kafka/exactly-once/README.md) — the contract details a review must interrogate.
-- [Consistency Models](../../distributed-systems/consistency-models/README.md) and [Reconciliation](../../data-quality/reconciliation/README.md) — for the dual-write / divergence failure mode.
-- [Capacity Planning](../../finops/capacity-planning/README.md) and [Cost Attribution](../../finops/cost-attribution/README.md) — putting the cost model into the review.
-- External: Werner Vogels / Jeff Bezos on **one-way vs two-way door decisions** (Amazon 2015–2016 shareholder letters). Michael Nygard, *"Documenting Architecture Decisions"* (2011) — the original ADR pattern.

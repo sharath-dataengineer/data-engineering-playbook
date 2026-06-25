@@ -4,14 +4,14 @@
 
 ## About This Chapter
 
-**What this is.** Lineage is the directed graph of datasets and runs that answers "what feeds this number?" and "if I change this, what breaks?" This chapter covers column-level lineage captured at execution time, standardized on OpenLineage, and the workflows that make it pay off.
+**What this is.** Lineage is the directed graph (a diagram of nodes connected by arrows that show direction of flow) of datasets and runs that answers "what feeds this number?" and "if I change this, what breaks?" This chapter covers column-level lineage captured at execution time, standardized on OpenLineage (an open standard for how data pipeline tools report what they read and write), and the workflows that make it pay off.
 
-**Who it's for.** Data engineers, analytics engineers, platform/architecture leads, and engineers preparing for senior/staff data-engineering interviews.
+**Who it's for.** Mid-level data engineers, analytics engineers, platform/architecture leads, and engineers preparing for senior/staff data-engineering interviews.
 
 **What you'll take away.** By the end you'll be able to:
-- Capture column-level lineage from Spark logical plans, dbt manifests, and Airflow runs rather than by parsing SQL files out of band.
+- Capture column-level lineage from Spark logical plans (the internal representation of a query before it runs), dbt manifests (the JSON file dbt generates that describes your whole project), and Airflow runs rather than by parsing SQL files out of band.
 - Know exactly where column lineage degrades (UDFs, `explode`, `pivot`, dynamic SQL) and label edge confidence honestly.
-- Wire the graph into impact analysis, root-cause traversal, and freshness propagation, and keep it trustworthy with a canonical ID resolver and a coverage SLI.
+- Wire the graph into impact analysis, root-cause traversal, and freshness propagation, and keep it trustworthy with a canonical ID resolver and a coverage SLI (Service Level Indicator — a metric that tells you how well a system is performing).
 
 ---
 
@@ -21,7 +21,7 @@ Lineage is the graph that answers two questions every incident eventually forces
 
 - Lineage is a directed graph of **datasets (nodes)** and **runs (edges)**. The useful resolution is **column-level** with **transformation context** — table-to-table lineage tells you *that* `revenue_daily` depends on `orders`, but not *that* it depends on `orders.amount_cents` via a `SUM(...) / 100`. The second form is what survives a 3am page.
 - Capture lineage **at the point of execution**, not by re-parsing SQL out of band. A Spark plan, a dbt manifest, or an Airflow task that ran tells you what *actually* happened; a SQL file in git tells you what someone *intended* two deploys ago.
-- **[OpenLineage](https://openlineage.io/)** is the de-facto wire format. Standardize on it as your event schema even if you never adopt Marquez or DataHub — it decouples *producers* (Spark, dbt, Airflow) from *consumers* (catalog, impact analysis, alerting).
+- **OpenLineage** is the de-facto wire format (the agreed-upon structure for how lineage events are sent between systems). Standardize on it as your event schema even if you never adopt Marquez or DataHub — it decouples *producers* (Spark, dbt, Airflow) from *consumers* (catalog, impact analysis, alerting).
 - Lineage that is not *queried* is decoration. The value is realized in three workflows: **impact analysis** (pre-deploy blast radius), **root-cause traversal** (incident upstream walk), and **freshness/quality propagation** (a stale parent should taint children).
 - The hard part is not building the graph; it is keeping it **current, complete, and trustworthy** across SQL, PySpark, Kafka, external loads, and the inevitable `boto3` script someone runs from a laptop.
 - Column-level lineage from logical plans degrades through `UDF`, `explode`, `pivot`, and dynamic schema — know where your coverage drops to table-level and label it, rather than pretending the graph is complete.
@@ -30,7 +30,7 @@ Lineage is the graph that answers two questions every incident eventually forces
 
 A concrete Tuesday. The `finance.revenue_daily` table is reported wrong in a board deck — a metric is ~4% low for the prior 3 days. You have maybe 30 minutes before the question escalates.
 
-Without lineage, the investigation is archaeology: grep the warehouse for jobs writing `revenue_daily`, find a 600-line dbt model, read the CTEs, guess which of 11 upstream tables drifted, and repeat one level up. With ~40 people committing to the warehouse, this is a half-day of work and a Slack thread with six engineers.
+Without lineage, the investigation is archaeology: grep the warehouse for jobs writing `revenue_daily`, find a 600-line dbt model, read the CTEs (Common Table Expressions — intermediate named query blocks within a SQL statement), guess which of 11 upstream tables drifted, and repeat one level up. With ~40 people committing to the warehouse, this is a half-day of work and a Slack thread with six engineers.
 
 With **column-level lineage**, the query is mechanical:
 
@@ -45,7 +45,7 @@ You discover `fx_rates` had a late-arriving partition for 3 days, the join produ
 
 The same graph powers the inverse query before you ever ship. An engineer wants to rename `orders.amount_cents` to `orders.gross_amount_cents`. Impact analysis returns 23 downstream columns across 9 tables and 2 Looker dashboards. That list *is* the migration plan and the review checklist. Without it, the rename ships, and you find the 23 dependents one incident at a time.
 
-This is why lineage belongs under **observability**, not "documentation." It is the topology layer that makes [monitoring](../monitoring/README.md) alerts actionable and [freshness](../../data-quality/freshness/README.md) SLAs propagatable.
+This is why lineage belongs under **observability**, not "documentation." It is the topology layer that makes monitoring alerts actionable and freshness SLAs propagatable.
 
 ## How it works
 
@@ -66,9 +66,9 @@ flowchart LR
     B -. "JOIN currency,dt" .-> O
 ```
 
-- **Dataset**: a namespaced, addressable thing — `s3://lake/iceberg/finance.orders`, `kafka://prod/orders.v2`, `snowflake://acct/db/schema/orders`. Namespacing is load-bearing; the same logical table in two clusters must not collide or falsely merge.
-- **Job / Run**: a *job* is the recurring definition (`dbt:revenue_daily`); a *run* is one execution with a `runId`, `eventType` (START/RUNNING/COMPLETE/FAIL/ABORT), and timestamps. Edges attach to runs so the graph is *temporal* — you can ask "what was lineage on 2026-06-15?" not just "what is it now."
-- **Edge**: input/output facets connecting datasets to a run. Column-level lineage rides as a `columnLineage` facet mapping each output field to its `inputFields` plus a `transformation` description.
+- **Dataset**: a namespaced, addressable thing — `s3://lake/iceberg/finance.orders`, `kafka://prod/orders.v2`, `snowflake://acct/db/schema/orders`. Namespacing (prefixing dataset names with their system of origin) is load-bearing; the same logical table in two clusters must not collide or falsely merge.
+- **Job / Run**: a *job* is the recurring definition (`dbt:revenue_daily`); a *run* is one execution with a `runId`, `eventType` (START/RUNNING/COMPLETE/FAIL/ABORT), and timestamps. Edges attach to runs so the graph is *temporal* (time-aware) — you can ask "what was lineage on 2026-06-15?" not just "what is it now."
+- **Edge**: input/output facets (structured metadata attachments in OpenLineage) connecting datasets to a run. Column-level lineage rides as a `columnLineage` facet mapping each output field to its `inputFields` plus a `transformation` description.
 
 ### The OpenLineage event
 
@@ -103,11 +103,11 @@ Producers emit JSON events to an HTTP endpoint (or Kafka topic). A COMPLETE even
 }
 ```
 
-The consumer (Marquez, DataHub, or your own service) does an upsert: merge datasets by `(namespace, name)`, append the run, and rewrite the column-edge set for that output. **The graph is the materialized view over the event stream** — which means it is exactly as good as your event coverage.
+The consumer (Marquez, DataHub, or your own service) does an upsert (insert if new, update if already exists): merge datasets by `(namespace, name)`, append the run, and rewrite the column-edge set for that output. **The graph is the materialized view over the event stream** — which means it is exactly as good as your event coverage.
 
 ### Where column-level edges come from
 
-You do not write these by hand. They are extracted from the **logical plan** the engine already built:
+You do not write these by hand. They are extracted from the **logical plan** (the engine's internal description of what a query will do, before it actually runs) the engine already built:
 
 | Source | Extraction mechanism | Resolution |
 |---|---|---|
@@ -117,7 +117,7 @@ You do not write these by hand. They are extracted from the **logical plan** the
 | Raw SQL warehouse (Snowflake/BQ) | Parse `QUERY_HISTORY` / `INFORMATION_SCHEMA` access logs | Column-level if the parser resolves `SELECT *` |
 | Kafka → sink | Connector config + schema registry subject refs | Topic-to-table, field-level via Avro/Protobuf schema |
 
-The Spark path is the highest-fidelity because it reads the *optimized* plan after Catalyst resolves `*`, pushes filters, and rewrites expressions — see [Catalyst](../../spark-internals/catalyst/README.md). You get the real column projection, not the source text.
+The Spark path is the highest-fidelity because it reads the *optimized* plan after Catalyst (Spark's query optimizer) resolves `*`, pushes filters, and rewrites expressions. You get the real column projection, not the source text.
 
 ## Deep dive
 
@@ -125,11 +125,11 @@ This is where lineage projects go wrong, so it gets the most space.
 
 ### 1. Column lineage from logical plans — and exactly where it breaks
 
-The `openlineage-spark` integration registers a `SparkListener` and inspects `QueryExecution.optimizedPlan`. For each `LogicalPlan` node it tracks how output `AttributeReference`s map back to input attributes. A `Project(SUM(a/100) AS net)` cleanly attributes `net → a`. Coverage stays clean through `Project`, `Aggregate`, `Join`, `Filter`, `Union`, `Window`.
+The `openlineage-spark` integration registers a `SparkListener` (a hook that receives notifications as Spark executes queries) and inspects `QueryExecution.optimizedPlan`. For each `LogicalPlan` node it tracks how output `AttributeReference`s (Spark's internal representation of a column reference) map back to input attributes. A `Project(SUM(a/100) AS net)` cleanly attributes `net → a`. Coverage stays clean through `Project`, `Aggregate`, `Join`, `Filter`, `Union`, `Window`.
 
 It degrades — and you must *know* it degrades — at:
 
-- **Scala/Python UDFs**: the planner sees an opaque `ScalaUDF(inputs...)`. You get `output ← {all inputs}` with no transformation semantics. A UDF that only reads one of three input columns will over-report.
+- **Scala/Python UDFs** (User Defined Functions — custom code you write that runs inside Spark): the planner sees an opaque `ScalaUDF(inputs...)`. You get `output ← {all inputs}` with no transformation semantics. A UDF that only reads one of three input columns will over-report.
 - **`explode` / `posexplode` / `flatten`**: array-to-row fan-out; the lineage is real (child ← array column) but row-count semantics are lost, which matters for downstream quality propagation.
 - **`pivot`**: output columns are *data-dependent* (values become column names). The plan can't enumerate them at compile time, so you fall back to table-level for the pivoted block.
 - **`from_json` / schema inference on `string`**: if a column is parsed at runtime, the static plan has no child fields. Pin an explicit `schema` so the planner materializes the struct.
@@ -149,26 +149,26 @@ Use static parsing only as a *pre-merge* preview ("here's the likely blast radiu
 
 ### 3. Completeness: the dark-edge problem
 
-Your lineage graph is a *lower bound* on real dependencies. Every uninstrumented producer is a **dark edge** — a real data dependency invisible to the graph. The danger is not that dark edges exist; it's that the graph *looks* complete, so people trust the impact analysis and ship the rename, and the uninstrumented Python loader breaks silently.
+Your lineage graph is a *lower bound* on real dependencies. Every uninstrumented producer is a **dark edge** (a real data dependency that the lineage graph cannot see) — a real data dependency invisible to the graph. The danger is not that dark edges exist; it's that the graph *looks* complete, so people trust the impact analysis and ship the rename, and the uninstrumented Python loader breaks silently.
 
 Mitigations that actually work:
 
 - **Reconcile against access logs.** Snowflake `ACCESS_HISTORY` / BigQuery `INFORMATION_SCHEMA.JOBS` record every read/write. Periodically diff "datasets touched per writer" against your lineage edges. A writer in the logs but not the graph is a dark edge — alert on it.
-- **Make the producer the gate.** Instrument at the *platform* layer (the shared Spark image, the dbt wrapper, the Airflow plugin) so new pipelines emit lineage by default. If lineage is opt-in per team, coverage asymptotes to ~60% and stays there. This is a [golden-path](../../platform-engineering/golden-paths/README.md) decision.
+- **Make the producer the gate.** Instrument at the *platform* layer (the shared Spark image, the dbt wrapper, the Airflow plugin) so new pipelines emit lineage by default. If lineage is opt-in per team, coverage asymptotes to ~60% and stays there. This is a golden-path decision (a golden path is a pre-built, recommended way to do something on a shared platform so teams don't have to figure it out from scratch).
 - **Track a coverage SLI.** "% of warehouse write-bytes covered by a lineage edge in the last 24h." Put it on a dashboard. Coverage you don't measure rots.
 
 ### 4. Identity and namespace normalization
 
-The silent killer of lineage graphs is **node identity**. `s3://lake/orders`, `s3a://lake/orders/`, `iceberg://lake/db.orders`, and `glue://...orders` can all refer to the same table emitted by four producers. If you don't canonicalize, the graph fragments into disconnected islands and traversal returns half the truth.
+The silent killer of lineage graphs is **node identity**. `s3://lake/orders`, `s3a://lake/orders/`, `iceberg://lake/db.orders`, and `glue://...orders` can all refer to the same table emitted by four producers. If you don't canonicalize (reduce all these varied names to a single consistent identifier), the graph fragments into disconnected islands and traversal returns half the truth.
 
-Build a **naming resolver** in the consumer: a deterministic function `(rawNamespace, rawName) → canonicalDatasetId` that strips schemes, normalizes trailing slashes, resolves Glue/metastore aliases to the physical Iceberg table, and maps temp/staging views to their final target. This resolver is the single most important piece of infrastructure in a lineage system and the one most often skipped. See [Iceberg](../../lakehouse/iceberg/README.md) and [metadata layers](../../lakehouse/metadata-layers/README.md) for why catalog identity is non-trivial.
+Build a **naming resolver** in the consumer: a deterministic function `(rawNamespace, rawName) → canonicalDatasetId` that strips schemes, normalizes trailing slashes, resolves Glue/metastore aliases to the physical Iceberg table, and maps temp/staging views to their final target. This resolver is the single most important piece of infrastructure in a lineage system and the one most often skipped.
 
 ### 5. Streaming lineage
 
 Kafka complicates the model because a topic is a *continuous* dataset, not a partition you wrote once. Two practical stances:
 
-- **Topology-level**: emit lineage from the connector/stream definition — `orders.v2 → flink:enrich → orders_enriched`. This is static, captured at deploy, field-level via the schema registry subject. Good enough for impact analysis.
-- **Per-microbatch**: a Structured Streaming job emits an OpenLineage run *per trigger*, with offsets as the "partition" facet. High volume; only worth it if you need to correlate a specific bad batch to its offset range. Tie this to [offsets](../../kafka/offsets/README.md) and [event design](../../kafka/event-design/README.md) — the schema subject is your column-level source for streaming.
+- **Topology-level**: emit lineage from the connector/stream definition — `orders.v2 → flink:enrich → orders_enriched`. This is static, captured at deploy, field-level via the schema registry subject (the schema registry is a service that stores and versions the data schemas your Kafka topics use). Good enough for impact analysis.
+- **Per-microbatch**: a Structured Streaming job emits an OpenLineage run *per trigger*, with offsets (the position in a Kafka topic, like a bookmark) as the "partition" facet. High volume; only worth it if you need to correlate a specific bad batch to its offset range.
 
 ## Worked example
 
@@ -208,7 +208,7 @@ No `emit_lineage()` calls in the business logic. The listener reads the plan. Th
 
 ### Querying the graph for impact analysis
 
-Marquez stores the graph in Postgres; you can also load it into a graph DB. Downstream blast radius for a column, in recursive SQL:
+Marquez stores the graph in Postgres; you can also load it into a graph DB. Downstream blast radius for a column, in recursive SQL (a query that repeatedly calls itself to walk a tree or graph structure):
 
 ```sql
 -- "What depends on orders.amount_cents, transitively?"
@@ -237,7 +237,7 @@ Wire that into CI: a PR that alters a column runs this query against the *curren
 
 ### Closing the freshness loop
 
-Lineage edges let a stale parent **taint** children. When `fx_rates` misses its SLA, walk the graph and mark every downstream dataset `freshness=at_risk` until it re-derives. This is how a single missed upstream partition becomes a *targeted* page ("3 downstream tables at risk") instead of a blanket "everything is maybe stale." See [freshness](../../data-quality/freshness/README.md).
+Lineage edges let a stale parent **taint** children. When `fx_rates` misses its SLA (Service Level Agreement — a commitment that data will be ready by a certain time), walk the graph and mark every downstream dataset `freshness=at_risk` until it re-derives. This is how a single missed upstream partition becomes a *targeted* page ("3 downstream tables at risk") instead of a blanket "everything is maybe stale."
 
 ## Production patterns
 
@@ -246,7 +246,7 @@ Lineage edges let a stale parent **taint** children. When `fx_rates` misses its 
 - **Persist runs, not just current state.** Keep the temporal graph (run-versioned edges) for at least your incident-investigation window (90+ days). "What was lineage when the bad partition was written?" is unanswerable without it.
 - **Reconcile against access logs nightly.** Diff warehouse `ACCESS_HISTORY` writers against lineage producers; alert on dark edges. This is your coverage truth, not the producer's self-report.
 - **Expose lineage where engineers already are.** A link from the table page, a `dbt docs` panel, a CI comment. A separate "lineage portal" nobody logs into is a graph nobody queries.
-- **Attach quality + freshness facets to the same nodes.** Lineage is the topology; layer the [data-quality](../../data-quality/accuracy/README.md) and [metrics](../metrics/README.md) signals on it so one graph answers "what, how fresh, how correct, and what's downstream."
+- **Attach quality + freshness facets to the same nodes.** Lineage is the topology; layer the data-quality and metrics signals on it so one graph answers "what, how fresh, how correct, and what's downstream."
 
 ## Anti-patterns & failure modes
 
@@ -299,4 +299,3 @@ The non-negotiable: **standardize producers on OpenLineage** regardless of consu
 - [Catalyst](../../spark-internals/catalyst/README.md) — why optimized logical plans are the best column-lineage source.
 - [Iceberg](../../lakehouse/iceberg/README.md) / [Metadata layers](../../lakehouse/metadata-layers/README.md) — catalog identity, the root of node canonicalization.
 - [Golden paths](../../platform-engineering/golden-paths/README.md) — why platform-level instrumentation beats per-team opt-in.
-- External: [OpenLineage spec](https://openlineage.io/docs/spec/object-model) and [Marquez data model](https://marquezproject.ai/docs/) — the reference object model and a working consumer.

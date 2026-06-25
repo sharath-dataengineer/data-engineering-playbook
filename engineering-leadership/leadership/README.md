@@ -6,10 +6,10 @@
 
 **What this is.** Technical leadership for a principal engineer with no direct reports: changing what fifty engineers build by changing the defaults, gates, and stories rather than the code. This chapter treats leadership as a systems-design problem where the system is the org plus its pipelines.
 
-**Who it's for.** Platform/architecture leads, engineering managers/tech leads, and engineers preparing for senior/staff data-engineering interviews.
+**Who it's for.** Mid-level data engineers, platform/architecture leads, engineering managers/tech leads, and engineers preparing for senior/staff data-engineering interviews.
 
 **What you'll take away.** By the end you'll be able to:
-- Apply leverage through golden paths, scaffolds, CI gates, and ADRs instead of one-off mandates, and pick the right altitude (global vs domain vs local) for each decision.
+- Apply leverage through golden paths (opinionated, well-supported ways to build things), scaffolds (template starter code), CI gates (automated checks that block bad code before it merges), and ADRs (Architecture Decision Records — written logs of important technical decisions) instead of one-off mandates, and pick the right altitude (global vs domain vs local) for each decision.
 - Earn and spend technical authority — carrying the pager, shipping load-bearing code, and practicing "disagree and commit" with falsifiable predictions wired into ADR tripwires.
 - Set a quality bar via automated gates and a short "consult a principal" trigger list without becoming the single-approver bottleneck.
 
@@ -19,16 +19,16 @@ Most leadership writing aimed at engineers is about people skills. This chapter 
 
 ## TL;DR
 
-- A principal's output is **the decisions other people make**, not the code you write. Measure yourself by the diffs you never had to author because the default was already right.
-- Leverage comes from **changing the surface area**: golden paths, scaffolds, lint rules, and CI gates move the whole org; a brilliant one-off PR moves one pipeline. See [platform-engineering/golden-paths](../../platform-engineering/golden-paths/README.md).
-- **Write the decision down or it didn't happen.** An undocumented architectural call is re-litigated every quarter as people churn. ADRs are the durable artifact; see [decision-records](../decision-records/README.md).
+- A principal's output is **the decisions other people make**, not the code you write. Measure yourself by the diffs (code changes) you never had to author because the default was already right.
+- Leverage comes from **changing the surface area**: golden paths, scaffolds, lint rules, and CI gates move the whole org; a brilliant one-off PR moves one pipeline.
+- **Write the decision down or it didn't happen.** An undocumented architectural call is re-litigated every quarter as people churn. ADRs (Architecture Decision Records) are the durable artifact.
 - Lead incidents toward **blameless causal analysis**, not heroics. The org you build is the one that survives a Saturday at 3am when you're offline.
-- The hardest principal skill is **disagreeing and committing in public**, then making the path you lost on succeed anyway. Sandbagging a decision you disagreed with is how you lose the room.
+- The hardest principal skill is **disagreeing and committing in public**, then making the path you lost on succeed anyway. Sandbagging (deliberately underperforming on) a decision you disagreed with is how you lose the room.
 - You earn the right to set the bar by **carrying a pager and shipping**, not by reviewing from a tower.
 
 ## Why this matters in production
 
-Concrete scenario. A 40-person data org runs ~600 Spark jobs and ~120 Kafka consumers across three domains (payments, risk, marketing). Each domain picked its own conventions over four years. Payments writes Iceberg with `write.target-file-size-bytes=536870912` and compacts hourly; risk writes Delta with no compaction and 8 KB files piling up; marketing writes raw Parquet with `coalesce(1)` and a 9-hour nightly job nobody can restart safely. Three on-call rotations, three incident formats, three definitions of "data is fresh."
+Concrete scenario. A 40-person data org runs ~600 Spark jobs and ~120 Kafka consumers (services that read messages from a Kafka event stream) across three domains (payments, risk, marketing). Each domain picked its own conventions over four years. Payments writes Iceberg (an open table format designed for large analytic datasets) with `write.target-file-size-bytes=536870912` and compacts (merges small files into larger ones) hourly; risk writes Delta (another open table format with built-in ACID transactions) with no compaction and 8 KB files piling up; marketing writes raw Parquet with `coalesce(1)` (a Spark operation that forces all data into a single output file) and a 9-hour nightly job nobody can restart safely. Three on-call rotations, three incident formats, three definitions of "data is fresh."
 
 No individual engineer is wrong. Each made a locally reasonable call. The platform is incoherent because **nobody owned the cross-cutting decisions**, and the cost shows up as: duplicated table-maintenance code, an 11-day onboarding ramp because there's no canonical path, and a recurring class of incident (small-file explosions, unbounded state stores, non-idempotent restarts) that each team rediscovers independently.
 
@@ -53,7 +53,7 @@ flowchart TD
     I -->|revise| A
 ```
 
-The model is a **control loop**, not a one-shot mandate. You ship a default, watch the signals (incident rate, p99 latency, cost per TB, onboarding time), and revise. The leverage multiplier is roughly:
+The model is a **control loop** (a system that observes its own output and adjusts), not a one-shot mandate. You ship a default, watch the signals (incident rate, p99 latency, cost per TB, onboarding time), and revise. The leverage multiplier is roughly:
 
 ```
 impact ≈ (engineers affected) × (decision frequency) × (cost per wrong decision)
@@ -63,6 +63,8 @@ impact ≈ (engineers affected) × (decision frequency) × (cost per wrong decis
 This is why a `target-file-size` lint rule that fires on every Iceberg write beats a one-time compaction fix: the lint touches every future write by every engineer, the compaction fix touches one table once. The subtraction term matters — a default you don't maintain rots into a trap, and a rotted default costs *more* than no default because people trust it.
 
 ### Three altitudes of a leadership decision
+
+Think of "altitude" as how broadly a decision applies — global means the whole org must follow it, local means a single pipeline team decides for themselves.
 
 | Altitude | Question | Artifact | Revisit trigger |
 |---|---|---|---|
@@ -80,16 +82,16 @@ A principal usually has no reports and no budget. Authority is *granted* by the 
 
 The mechanics that actually generate authority:
 
-- **Carry the pager.** Be in the on-call rotation for the platform you set standards for. The fastest way to lose credibility is to mandate a pattern you've never been paged for at 3am. When I require idempotent restarts, it's because I've personally re-run a non-idempotent 9-hour marketing job and watched it double-write a fact table.
-- **Ship load-bearing code.** Not feature volume — *consequential* code. The Iceberg compaction service, the Kafka consumer scaffold, the lineage instrumentation. Code that other teams depend on buys you standing to review theirs.
+- **Carry the pager.** Be in the on-call rotation for the platform you set standards for. The fastest way to lose credibility is to mandate a pattern you've never been paged for at 3am. When I require idempotent restarts (restarts that produce the same result whether run once or ten times), it's because I've personally re-run a non-idempotent 9-hour marketing job and watched it double-write a fact table.
+- **Ship load-bearing code.** Not feature volume — *consequential* code. The Iceberg compaction service, the Kafka consumer scaffold, the lineage instrumentation (code that tracks where data came from and where it goes). Code that other teams depend on buys you standing to review theirs.
 - **Lose arguments visibly and gracefully.** The single highest-leverage trust-building act is disagreeing in a design review, being overruled by data, and then helping the winning approach ship. People extend you authority when they've seen you not abuse it.
 
 ### Disagree and commit — the part everyone gets wrong
 
 "Disagree and commit" is misread as "shut up after the decision." The real obligation is heavier:
 
-1. Disagree *loudly and specifically* **before** the decision, with the falsifiable prediction attached: "If we go event-driven for risk scoring, the unbounded state store will OOM the executors within ~6 weeks at current event growth; here's the math."
-2. Once the call is made against you, **commit fully** — and write your prediction into the ADR's "consequences" section as a tripwire.
+1. Disagree *loudly and specifically* **before** the decision, with the falsifiable prediction (a prediction specific enough that you can later check whether it came true) attached: "If we go event-driven for risk scoring, the unbounded state store will OOM the executors within ~6 weeks at current event growth; here's the math."
+2. Once the call is made against you, **commit fully** — and write your prediction into the ADR's "consequences" section as a tripwire (a measurable signal that tells you to re-examine the decision).
 3. When the tripwire fires, **resist the I-told-you-so.** Reference the ADR, fix the platform, move on. The ADR did the politics for you.
 
 The anti-pattern is the principal who keeps relitigating in side channels, or worse, builds a parallel "correct" implementation in the dark. That fractures the platform and burns the trust you need for the *next* decision.
@@ -103,7 +105,7 @@ Mentoring one engineer is linear. Turning that engineer into someone who sets st
 A principal sets a quality bar; a principal does **not** become the single approver on every PR. That's a bottleneck and a single point of failure for the org's velocity. The bar lives in:
 
 - **Automated gates** (CI lints, schema-compatibility checks, cost-regression alerts) that don't need you to be awake.
-- **A small set of "you must consult a principal" triggers**: new datastore, new public API contract, anything touching PII or money, anything that changes a global default.
+- **A small set of "you must consult a principal" triggers**: new datastore, new public API contract, anything touching PII (Personally Identifiable Information) or money, anything that changes a global default.
 
 Everything else, the teams own. If you find yourself in every code review, you've built a gate, not a bar, and you're the reason velocity is dropping.
 
@@ -111,7 +113,7 @@ Everything else, the teams own. If you find yourself in every code review, you'v
 
 A leadership decision encoded so it scales without you. Suppose the global call is: *every Iceberg table in the org must have a registered compaction policy.* You don't enforce this by reviewing tables. You enforce it with a CI gate plus a self-service scaffold.
 
-The ADR tripwire, written into [decision-records](../decision-records/README.md):
+The ADR tripwire, written into the decision records:
 
 ```markdown
 ## ADR-014: Mandatory compaction policy for Iceberg tables
@@ -176,7 +178,7 @@ Now the leadership decision is in three places that all outlive you: the ADR (th
 - **Default-shifting over mandate-issuing.** Change the scaffold, the template, the `CREATE TABLE` generator. New work starts correct; you spend zero authority and zero review time. Reserve mandates for the handful of genuinely global, irreversible calls.
 - **Pager-driven standards.** Only standardize patterns you've personally been paged for or can point to a specific incident for. A standard with an incident behind it survives challenge; a standard from taste alone does not.
 - **The "consult a principal" trigger list.** Publish the short list of changes that require principal review (new datastore, money/PII, global-default change). Everything off the list, teams ship without you. This is how you set a bar without becoming a gate.
-- **Local owners for local standards.** Every domain gets a named owner of its table-maintenance, schema-evolution, and on-call standards. You federate; you don't centralize. Your job becomes the *interface* between domains, not the implementer inside them.
+- **Local owners for local standards.** Every domain gets a named owner of its table-maintenance, schema-evolution, and on-call standards. You federate (distribute responsibility to domain owners); you don't centralize. Your job becomes the *interface* between domains, not the implementer inside them.
 - **Public retro on your own miss.** When your tripwire is wrong, say so in the retro. It is the single most authority-generating move available and it costs nothing but ego.
 
 ## Anti-patterns & failure modes
@@ -187,9 +189,9 @@ Now the leadership decision is in three places that all outlive you: the ADR (th
 | Mandate without scaffold | High "compliance" in the ADR, near-zero in the catalog; teams paste boilerplate they don't understand | Ship the default path; make compliance the path of least resistance |
 | Shadow re-implementation | A "correct" parallel pipeline appears in your branch; two sources of truth for the same fact table | Commit to the decision you lost; if it's truly wrong, re-open the ADR with data, not a fork |
 | Standardizing on taste | "Because I said so" pushback; standard erodes within two quarters | Attach every standard to a specific incident or a measured cost; if you can't, it's local |
-| Hero on-call | One person resolves 80% of pages; bus factor of 1; burnout | Write runbooks during the retro; rotate the page; the principal's job is fewer pages, not faster ones |
+| Hero on-call | One person resolves 80% of pages; bus factor of 1 (the whole system depends on one person); burnout | Write runbooks during the retro; rotate the page; the principal's job is fewer pages, not faster ones |
 | Global decision pushed to local | Three table formats, three incident formats, 11-day onboarding | Pull the genuinely cross-cutting calls up to ADR altitude; leave the rest with teams |
-| Local decision pulled to global | Org-wide `repartition` mandate; teams route around the platform | Push pipeline-level tuning back down; trust [Spark AQE](../../spark-internals/aqe/README.md) and team judgment |
+| Local decision pulled to global | Org-wide `repartition` mandate; teams route around the platform | Push pipeline-level tuning back down; trust AQE (Adaptive Query Execution — Spark's built-in query optimizer) and team judgment |
 
 The two altitude failures are mirror images and the most common. A principal who gets altitude right is mostly invisible — which is the point, and also why the role is hard to measure.
 
@@ -222,5 +224,4 @@ Rule of thumb: **if reversing it later requires a migration, it's global; if rev
 - [technical-strategy](../technical-strategy/README.md) — the multi-quarter arc the individual decisions ladder up to.
 - [roadmaps](../roadmaps/README.md) — sequencing platform investments across domains.
 - [platform-engineering/golden-paths](../../platform-engineering/golden-paths/README.md) — the scaffold mechanism that makes the correct path the easy path.
-- Will Larson, *Staff Engineer: Leadership Beyond the Management Track* (2021) — the canonical text on the IC leadership ladder.
-- Amazon's "disagree and commit" leadership principle, and the original [ADR pattern](https://adr.github.io/) by Michael Nygard.
+- Will Larson, *Staff Engineer: Leadership Beyond the Management Track* (2021) — the canonical text on the IC (Individual Contributor) leadership ladder.

@@ -4,14 +4,14 @@
 
 ## About This Chapter
 
-**What this is.** A consumer group is how Kafka spreads a topic's partitions across multiple consumers for parallelism and failover. This chapter covers the membership protocol, rebalancing, the timers that govern liveness, and the offset/coordination machinery behind it.
+**What this is.** A consumer group is how Kafka spreads a topic's partitions (the subdivisions of a topic that allow parallel reads) across multiple consumers for parallelism and failover. This chapter covers the membership protocol (how consumers join and leave the group), rebalancing (how partitions get redistributed when the group changes), the timers that govern liveness, and the offset and coordination machinery behind it.
 
-**Who it's for.** data engineers, data/ML engineers, platform/architecture leads, and engineers preparing for senior/staff data-engineering interviews.
+**Who it's for.** Mid-level data engineers, data/ML engineers, platform/architecture leads, and engineers preparing for senior/staff data-engineering interviews.
 
 **What you'll take away.** By the end you'll be able to:
-- Size consumers against the partition ceiling and use cooperative-sticky assignment plus static membership to make rolling deploys rebalance-free.
+- Size consumers against the partition ceiling and use cooperative-sticky assignment (a rebalancing strategy that minimizes disruption) plus static membership (pinning a consumer to a stable identity) to make rolling deploys rebalance-free.
 - Reason about `session.timeout.ms`, `heartbeat.interval.ms`, and `max.poll.interval.ms`, and diagnose which one is evicting a healthy consumer.
-- Write a correct manual-commit consumer with a revoke handler that commits last-processed + 1, and treat `__consumer_offsets` as infrastructure you own.
+- Write a correct manual-commit consumer with a revoke handler that commits last-processed + 1, and treat `__consumer_offsets` (the internal Kafka topic that stores committed positions) as infrastructure you own.
 
 ---
 
@@ -20,11 +20,11 @@ A consumer group is Kafka's unit of horizontal scale, fault tolerance, and order
 ## TL;DR
 
 - A consumer group maps **partitions to consumers** — never the reverse. Your maximum useful parallelism equals the partition count of the topic(s) you subscribe to. Add a 13th consumer to a 12-partition topic and it sits idle.
-- **Rebalances are the enemy of throughput.** Every rebalance under the eager protocol revokes *all* partitions from *all* members ("stop-the-world"). Cooperative rebalancing (KIP-429, default since 2.4) and static membership (KIP-345) exist to make rebalances rare and cheap.
+- **Rebalances are the enemy of throughput.** Every rebalance under the eager protocol (the original all-stop strategy) revokes *all* partitions from *all* members ("stop-the-world"). Cooperative rebalancing (KIP-429, the improvement introduced to minimize disruption, default since Kafka 2.4) and static membership (KIP-345, which lets a consumer keep a stable identity across restarts) exist to make rebalances rare and cheap.
 - The three timers that govern membership — `session.timeout.ms`, `heartbeat.interval.ms`, and `max.poll.interval.ms` — fail you in different ways. The one that bites teams in production is `max.poll.interval.ms`: slow processing, not network loss, is what kicks healthy consumers out of the group.
 - **Offsets are committed per group, per partition.** The group is the identity that owns "where am I." Two pipelines reading the same topic for different purposes must use different `group.id`s, or they steal each other's progress.
-- Group coordination, offset storage, and rebalance orchestration all live in the broker-side **`__consumer_offsets`** topic and a per-group **GroupCoordinator**. When that topic is misconfigured (under-replicated, wrong cleanup policy), the whole group blinks.
-- KIP-848 (the new consumer group protocol, GA in Kafka 4.0) moves assignment computation to the broker and largely eliminates client-side rebalance stalls. Know whether your cluster speaks it.
+- Group coordination, offset storage, and rebalance orchestration all live in the broker-side **`__consumer_offsets`** topic (an internal Kafka topic that tracks committed positions and group metadata) and a per-group **GroupCoordinator** (the broker elected to manage that group). When that topic is misconfigured — under-replicated or set to the wrong cleanup policy — the whole group blinks.
+- KIP-848 (the new consumer group protocol, generally available in Kafka 4.0) moves assignment computation to the broker and largely eliminates client-side rebalance stalls. Know whether your cluster speaks it.
 
 ## Why this matters in production
 
@@ -32,13 +32,13 @@ A concrete scenario from a clickstream ingestion pipeline. The topic `events.cli
 
 Then a deploy rolls the 12 pods one at a time. Under the **eager** assignment protocol, each pod restart triggers a rebalance, and each rebalance revokes all 24 partitions from all 11 surviving pods, recomputes assignment, and resumes. A 12-pod rolling deploy fires **12 stop-the-world rebalances**. During each one, *zero* partitions are being consumed. The deploy takes 4 minutes; lag spikes to 90 seconds and pages the on-call.
 
-The same deploy with **cooperative-sticky** assignment and **static group membership** fires effectively zero disruptive rebalances — a restarting pod keeps its `group.instance.id`, rejoins within `session.timeout.ms`, and reclaims the same two partitions without anyone else stopping. Lag never crosses 5 seconds. That is the entire difference between a clean deploy and a 2am page, and it is two config lines.
+The same deploy with **cooperative-sticky** assignment and **static group membership** fires effectively zero disruptive rebalances — a restarting pod keeps its `group.instance.id` (its stable identifier), rejoins within `session.timeout.ms`, and reclaims the same two partitions without anyone else stopping. Lag never crosses 5 seconds. That is the entire difference between a clean deploy and a 2am page, and it is two config lines.
 
 This is why consumer-group mechanics are a principal-level topic: the defaults are correct for a laptop demo and wrong for a rolling deploy at scale.
 
 ## How it works
 
-A consumer group is coordinated by exactly one broker — the **GroupCoordinator** — chosen by hashing the `group.id` to a partition of the internal `__consumer_offsets` topic; the leader of that partition is the coordinator. Members talk to the coordinator for membership (join/sync/heartbeat) and for offset commits.
+A consumer group is coordinated by exactly one broker — the **GroupCoordinator** — chosen by hashing the `group.id` (your group's unique name) to a partition of the internal `__consumer_offsets` topic; the leader of that partition becomes the coordinator. Members talk to the coordinator for membership (join/sync/heartbeat) and for offset commits.
 
 ```mermaid
 sequenceDiagram
@@ -62,7 +62,7 @@ sequenceDiagram
     end
 ```
 
-Key detail engineers miss: **the assignment is computed on the group leader (a client), not the broker** under the classic protocol. The broker just relays the member list to the leader and the resulting assignment back to members. The leader runs the configured `partition.assignment.strategy`. This is why upgrading the assignor is a *rolling client* concern, and why a buggy client can wedge an entire group.
+Key detail engineers miss: **the assignment is computed on the group leader (a client), not the broker** under the classic protocol. The broker just relays the member list to the leader and the resulting assignment back to members. The leader runs the configured `partition.assignment.strategy` (the algorithm that decides which consumer gets which partition). This is why upgrading the assignor is a *rolling client* concern, and why a buggy client can wedge an entire group.
 
 ### The three timers
 
@@ -72,11 +72,11 @@ Key detail engineers miss: **the assignment is computed on the group leader (a c
 | `session.timeout.ms` | 45s | Max gap between heartbeats before the member is declared dead | Network blip / GC pause → eviction + rebalance |
 | `max.poll.interval.ms` | 300s (5 min) | Max gap between `poll()` calls | Slow processing → member proactively *leaves* the group |
 
-Heartbeats run on a **separate background thread** since 0.10.1, so a consumer can be heartbeating happily while its application thread is stuck in a 6-minute batch. That consumer is alive to the coordinator (session not expired) but dead to progress. When `poll()` finally exceeds `max.poll.interval.ms`, the client sends a LeaveGroup, triggering a rebalance and *reprocessing* of the in-flight batch by whoever inherits the partition — a classic duplicate source. See [offsets](../offsets/README.md) for how commit timing interacts with this.
+Heartbeats run on a **separate background thread** since Kafka 0.10.1. This means a consumer can be heartbeating happily while its application thread is stuck in a 6-minute batch — the coordinator thinks the consumer is alive because it keeps receiving heartbeats, but the consumer is making zero progress. When `poll()` finally exceeds `max.poll.interval.ms`, the client sends a LeaveGroup, triggering a rebalance and *reprocessing* of the in-flight batch by whoever inherits the partition — a classic duplicate source. See [offsets](../offsets/README.md) for how commit timing interacts with this.
 
 ### Assignment strategies
 
-The effective `max(parallelism) = number of partitions`. Within that ceiling, the assignor decides who gets what:
+The effective `max(parallelism) = number of partitions`. Within that ceiling, the assignor (the strategy that distributes partitions among consumers) decides who gets what:
 
 | Strategy | Balance | Stickiness | Rebalance cost |
 |---|---|---|---|
@@ -89,28 +89,28 @@ The effective `max(parallelism) = number of partitions`. Within that ceiling, th
 
 ### Eager vs cooperative rebalancing — the part that actually moves lag
 
-Under **eager** rebalancing (the original protocol), the rebalance is a barrier: every member must revoke *all* its partitions in `onPartitionsRevoked`, rejoin, then receive a fresh assignment. The window where nobody owns anything is the rebalance duration — and it scales with group size and assignment-computation time. A 50-member group rebalancing on every pod restart is a self-inflicted outage.
+Under **eager** rebalancing (the original protocol), a rebalance is a full stop: every member must revoke *all* its partitions in `onPartitionsRevoked`, rejoin, then receive a fresh assignment. The window where nobody owns anything is the rebalance duration — and it scales with group size and assignment-computation time. A 50-member group rebalancing on every pod restart is a self-inflicted outage.
 
-**Cooperative** rebalancing (KIP-429) splits a rebalance into two joins. In the first, the assignor figures out which partitions actually need to move and asks only their current owners to revoke them. Partitions that stay put are never interrupted. Net effect: a single pod restart in a 50-member group disturbs only the ~2 partitions that pod owned, not all of them.
+**Cooperative** rebalancing (KIP-429) splits a rebalance into two joins. In the first pass, the assignor figures out which partitions actually need to move and asks only their current owners to revoke them. Partitions that stay put are never interrupted. Net effect: a single pod restart in a 50-member group disturbs only the ~2 partitions that pod owned, not all of them.
 
 The migration trap: you cannot flip from `RangeAssignor` to `CooperativeStickyAssignor` in one rolling restart, because mid-roll some members speak eager and some speak cooperative, and they disagree on the revocation contract. The supported path is a **two-phase rolling upgrade**: first set `partition.assignment.strategy=[CooperativeStickyAssignor, RangeAssignor]` (cooperative listed first, range as fallback) and roll; then drop `RangeAssignor` and roll again. Skip the intermediate step and you get a group stuck in perpetual rebalance.
 
 ### Static membership — why your deploys page you
 
-By default a consumer gets an **ephemeral member ID** assigned by the coordinator on every JoinGroup. Restart the pod and it's a brand-new member, which means a leave (old ID expires) *and* a join (new ID) — two rebalances per restart.
+By default a consumer gets an **ephemeral member ID** (a temporary identity assigned fresh on each start) assigned by the coordinator on every JoinGroup. Restart the pod and it's a brand-new member, which means a leave (old ID expires) *and* a join (new ID) — two rebalances per restart.
 
 Static membership (KIP-345) lets you pin a stable `group.instance.id` (e.g. the StatefulSet ordinal `clickstream-writer-3`). On restart, the coordinator recognizes the returning instance ID and — as long as it reconnects within `session.timeout.ms` — hands back the **same partitions with no rebalance at all**. The tradeoff: a *crashed* static member's partitions are not reassigned until `session.timeout.ms` elapses, so you trade faster recovery for fewer rebalances. Tune `session.timeout.ms` up (e.g. 60–120s) when you adopt static membership, so a 30-second pod restart doesn't trip a rebalance, but accept that a true crash means up to that many seconds of unconsumed lag on those partitions.
 
 ### The `__consumer_offsets` topic is infrastructure you own
 
-This internal topic stores both committed offsets and group metadata. Two failure modes I've actually debugged:
+This internal topic stores both committed offsets and group metadata. Two failure modes worth knowing:
 
-1. **Under-replicated `__consumer_offsets`.** Default `offsets.topic.replication.factor` is 3, but if the topic was auto-created when the cluster had fewer than 3 live brokers, it gets created with RF=1. Lose that one broker and *every* group on the cluster loses its coordinator and its committed offsets simultaneously. Always verify RF=3 explicitly.
-2. **Compaction misconfiguration.** `__consumer_offsets` uses `cleanup.policy=compact`. If someone sets it to `delete`, old offset commits get aged out, and a group that goes idle longer than the retention window comes back having "forgotten" its position — it then honors `auto.offset.reset` (often `latest`) and silently skips everything produced while it was down.
+1. **Under-replicated `__consumer_offsets`.** The default `offsets.topic.replication.factor` is 3, but if the topic was auto-created when the cluster had fewer than 3 live brokers, it gets created with RF=1 (only one copy of the data). Lose that one broker and *every* group on the cluster loses its coordinator and its committed offsets simultaneously. Always verify RF=3 explicitly.
+2. **Compaction misconfiguration.** `__consumer_offsets` uses `cleanup.policy=compact` (which keeps only the latest value per key, preserving the most recent committed offset). If someone sets it to `delete`, old offset commits get aged out, and a group that goes idle longer than the retention window comes back having "forgotten" its position — it then honors `auto.offset.reset` (often `latest`) and silently skips everything produced while it was down.
 
 ### Rebalance listeners and the commit-on-revoke contract
 
-The single most important code you write in a consumer is the `ConsumerRebalanceListener`. When a partition is revoked, you have a narrow window to commit the offset of the last fully processed record *before* someone else inherits it. Miss it and the inheritor reprocesses. Commit too eagerly (offsets ahead of processed work) and the inheritor *skips*. This is the seam where at-least-once vs at-most-once is actually decided — not in a config flag, but in the revoke handler. See [exactly-once](../exactly-once/README.md) for closing the duplicate gap with transactions.
+The single most important code you write in a consumer is the `ConsumerRebalanceListener` (a callback that fires when partitions are assigned or revoked). When a partition is revoked, you have a narrow window to commit the offset of the last fully processed record *before* someone else inherits it. Miss it and the inheritor reprocesses. Commit too eagerly (offsets ahead of processed work) and the inheritor *skips*. This is the seam where at-least-once vs at-most-once is actually decided — not in a config flag, but in the revoke handler. See [exactly-once](../exactly-once/README.md) for closing the duplicate gap with transactions.
 
 ## Worked example
 
@@ -202,7 +202,7 @@ kafka-consumer-groups.sh --bootstrap-server "$KAFKA_BOOTSTRAP" \
 - **Size partitions for peak consumer count, then add 30–50% headroom.** Partition count is your parallelism ceiling and is painful to increase (it breaks key-based ordering for keyed topics). A 24-partition topic caps you at 24 consumers forever; provision the partition count for the parallelism you'll need in 12 months.
 - **One `group.id` per logical consumer, never shared across deployables.** If two services subscribe with the same `group.id`, Kafka load-balances partitions *between* them — each service sees only a slice of the stream and assumes that's all there is. Silent data loss that no test catches. Use distinct group IDs; let each get a full copy.
 - **Alert on rebalance *rate*, not just lag.** The metric `kafka.consumer:type=consumer-coordinator-metrics,rebalance-rate-per-hour` rising is the leading indicator; lag is the lagging one. A group rebalancing more than a few times an hour outside deploys is sick.
-- **Make the sink idempotent and key it on `(topic, partition, offset)` or a business key.** Consumer groups give at-least-once by default; the only robust defense against the inevitable duplicate-on-rebalance is an idempotent write. Pairs with [dlq](../dlq/README.md) for poison records that would otherwise stall a partition forever.
+- **Make the sink idempotent and key it on `(topic, partition, offset)` or a business key.** Consumer groups give at-least-once by default; the only robust defense against the inevitable duplicate-on-rebalance is an idempotent write (one that produces the same result whether applied once or many times). Pairs with [dlq](../dlq/README.md) for poison records that would otherwise stall a partition forever.
 - **Pin `auto.offset.reset=earliest` for pipelines that must not lose data.** `latest` is correct for "live dashboard" consumers and catastrophic for ingestion — a group that loses its committed offset silently skips to the tail.
 
 ## Anti-patterns & failure modes
@@ -246,5 +246,3 @@ kafka-consumer-groups.sh --bootstrap-server "$KAFKA_BOOTSTRAP" \
 - [exactly-once](../exactly-once/README.md) — closing the at-least-once duplicate gap with transactions and `read_committed`.
 - [dlq](../dlq/README.md) — handling poison records so a single bad message doesn't stall a partition for the whole group.
 - [event-design](../event-design/README.md) — keying and partitioning choices that set your parallelism ceiling.
-- [KIP-429: Cooperative incremental rebalance protocol](https://cwiki.apache.org/confluence/display/KAFKA/KIP-429%3A+Kafka+Consumer+Incremental+Rebalance+Protocol)
-- [KIP-345: Static membership](https://cwiki.apache.org/confluence/display/KAFKA/KIP-345%3A+Introduce+static+membership+protocol+to+reduce+consumer+rebalances) and [KIP-848: The next generation consumer group protocol](https://cwiki.apache.org/confluence/display/KAFKA/KIP-848%3A+The+Next+Generation+of+the+Consumer+Rebalance+Protocol)

@@ -6,7 +6,7 @@
 
 **What this is.** Cost optimization treated as an engineering discipline — instrument, attribute, find the dominant cost term, fix it, and add a guardrail so it can't regress. This chapter ranks the levers for Spark/lakehouse spend and shows why the dominant term keeps moving.
 
-**Who it's for.** Data engineers, platform/architecture leads, and engineering managers/tech leads.
+**Who it's for.** Mid-level data engineers, platform/architecture leads, and engineering managers/tech leads.
 
 **What you'll take away.** By the end you'll be able to:
 - Optimize unit cost (`$/TB scanned`, `$/million events`) rather than the lagging aggregate bill.
@@ -19,12 +19,12 @@ Cost optimization in a data platform is not a quarterly spreadsheet exercise. It
 
 ## TL;DR
 
-- **Optimize the unit cost, not the bill.** `$ per TB scanned`, `$ per million events`, `$ per DBU-hour`, `$ per query`. A growing bill with a flat or falling unit cost is a *success*; a flat bill with rising unit cost is a hidden problem you have not been billed for yet.
+- **Optimize the unit cost, not the bill.** `$ per TB scanned`, `$ per million events`, `$ per DBU-hour` (DBU = Databricks Unit, the billing unit for Databricks compute), `$ per query`. A growing bill with a flat or falling unit cost is a *success*; a flat bill with rising unit cost is a hidden problem you have not been billed for yet.
 - **Three levers dominate Spark/lakehouse spend, in this order:** (1) bytes scanned (partition pruning, file layout, column projection), (2) compute price (Spot, Graviton, autoscaling floor), (3) idle/over-provisioned capacity (cluster sprawl, warm pools, oversized executors). Most teams reach for lever 2 first because it is a console setting; lever 1 is where the 5–10× wins live.
-- **Storage layout is a compute cost, not a storage cost.** The 200-byte-per-file overhead is irrelevant; the millions of S3 GET/LIST calls and split-planning on small files is what shows up on your compute bill. Compaction is a compute optimization.
-- **Spot interruptions are cheap on stateless work and ruinous on long shuffles.** Put the driver and shuffle-heavy stages on on-demand; put map-only and idempotent retryable work on Spot. A 70% Spot discount that triggers a 3-hour recompute is negative ROI.
+- **Storage layout is a compute cost, not a storage cost.** The 200-byte-per-file overhead is irrelevant; the millions of S3 GET/LIST calls and split-planning on small files is what shows up on your compute bill. Compaction (the process of merging many small files into fewer large ones) is a compute optimization.
+- **Spot interruptions are cheap on stateless work and ruinous on long shuffles.** Spot instances (discounted cloud VMs that can be reclaimed with short notice) work well when tasks are short and retryable. Put the driver and shuffle-heavy stages on on-demand; put map-only and idempotent retryable work on Spot. A 70% Spot discount that triggers a 3-hour recompute is negative ROI.
 - **Every cost guardrail must be enforceable in CI or at submit time.** A Slack reminder is not a control. A failing `bytes_scanned` budget check in the PR is.
-- **Cost without attribution is un-actionable.** You cannot optimize what you cannot assign to a team and a query. See [cost-attribution](../cost-attribution/README.md).
+- **Cost without attribution is un-actionable.** You cannot optimize what you cannot assign to a team and a query.
 
 ## Why this matters in production
 
@@ -80,17 +80,17 @@ This is why the lever ordering matters. Lever 1 (bytes) multiplies into runtime 
 
 On a query engine billed by scan (Athena at \$5/TB, BigQuery on-demand at \$6.25/TB), `$ per TB scanned` is the literal price. On Spark it is implicit but it drives runtime, so it shows up as instance-hours. The same four techniques reduce it everywhere:
 
-1. **Partition pruning** requires the predicate to align with the partition column *and* survive Catalyst's predicate pushdown. The classic miss: partitioning by `event_date STRING` and then filtering `WHERE cast(event_ts as date) = '2026-06-18'`. The cast blocks pushdown — the engine scans everything and filters in memory. You only find this by reading the physical plan for `PartitionFilters: []`.
+1. **Partition pruning** requires the predicate (the WHERE clause condition) to align with the partition column *and* survive Catalyst's predicate pushdown (Catalyst is Spark's query optimizer; predicate pushdown means it filters data at the file-read level rather than after loading everything into memory). The classic miss: partitioning by `event_date STRING` and then filtering `WHERE cast(event_ts as date) = '2026-06-18'`. The cast blocks pushdown — the engine scans everything and filters in memory. You only find this by reading the physical plan for `PartitionFilters: []`.
 
-2. **File layout and small files.** Iceberg/Delta split planning lists and opens every data file in the matching partitions. 50,000 files of 2 MB each cost far more in GET/LIST and task scheduling than 400 files of 256 MB. Target 128–512 MB files. Compaction (`OPTIMIZE` in Delta, `rewrite_data_files` in Iceberg) is the fix and it is a *compute* spend that pays back in reduced scan compute. See [lakehouse/iceberg](../../lakehouse/iceberg/README.md) and [spark-internals/partitioning](../../spark-internals/partitioning/README.md).
+2. **File layout and small files.** Iceberg/Delta split planning lists and opens every data file in the matching partitions. 50,000 files of 2 MB each cost far more in GET/LIST and task scheduling than 400 files of 256 MB. Target 128–512 MB files. Compaction (`OPTIMIZE` in Delta, `rewrite_data_files` in Iceberg) is the fix and it is a *compute* spend that pays back in reduced scan compute.
 
-3. **Column projection.** Parquet/ORC are columnar; `SELECT *` defeats the format. A 200-column events table where the query needs 6 columns scans ~30× more than necessary. The semantic layer / BI tool is the usual culprit because it expands to all columns by default.
+3. **Column projection.** Parquet/ORC are columnar formats (meaning data is stored by column, not by row), so reading only the columns you need skips the rest entirely. `SELECT *` defeats the format. A 200-column events table where the query needs 6 columns scans ~30× more than necessary. The semantic layer (the abstraction between the raw table and the BI tool) / BI tool is the usual culprit because it expands to all columns by default.
 
-4. **Data skipping / Z-order / clustering.** Min-max stats per file let the engine skip files whose range excludes the predicate. Effective only if the data is sorted/clustered on the filter column. Z-order on Delta and Iceberg sort-order writes give file-level pruning beyond partition-level.
+4. **Data skipping / Z-order / clustering.** Min-max stats per file let the engine skip files whose range excludes the predicate. This is effective only if the data is sorted or clustered on the filter column. Z-order (a multi-dimensional sorting technique) on Delta and Iceberg sort-order writes give file-level pruning beyond partition-level.
 
 ### Spot economics: where the discount turns negative
 
-Spot is ~60–70% off on-demand but can be reclaimed with a 2-minute warning. The decision is not "Spot good, on-demand bad" — it is per-stage risk.
+Spot instances are ~60–70% off on-demand but can be reclaimed by the cloud provider with a 2-minute warning. The decision is not "Spot good, on-demand bad" — it is per-stage risk.
 
 | Workload shape | Spot suitability | Why |
 |---|---|---|
@@ -99,22 +99,22 @@ Spot is ~60–70% off on-demand but can be reclaimed with a 2-minute warning. Th
 | Streaming with checkpointing | Mixed | Tolerable on executors if checkpoint interval is short; driver on on-demand |
 | Interactive / SLA-bound dashboards | Avoid | Interruption-induced latency violates the SLO that justifies the spend |
 
-The trap: a 3-hour batch job at 70% Spot looks like a 70% saving on the dashboard, but if the interruption rate forces one full recompute per week, the *expected* cost is `0.30 × normal + recompute_overhead`, and the recompute can wipe the discount. Mitigations: enable Spark's decommissioning (`spark.decommission.enabled=true`, `spark.storage.decommission.enabled=true`) so shuffle/RDD blocks migrate off a node before reclamation, diversify across instance types and AZs to reduce correlated interruptions, and keep the driver + at least the shuffle-critical fraction of executors on on-demand or a fallback pool.
+The trap: a 3-hour batch job at 70% Spot looks like a 70% saving on the dashboard, but if the interruption rate forces one full recompute per week, the *expected* cost is `0.30 × normal + recompute_overhead`, and the recompute can wipe the discount. Mitigations: enable Spark's decommissioning (`spark.decommission.enabled=true`, `spark.storage.decommission.enabled=true`) so shuffle/RDD blocks migrate off a node before reclamation, diversify across instance types and AZs (Availability Zones — physically separate data center locations within a cloud region) to reduce correlated interruptions, and keep the driver + at least the shuffle-critical fraction of executors on on-demand or a fallback pool.
 
 ### Idle and over-provisioned capacity
 
 Two distinct wastes that look the same on the bill:
 
 - **Idle:** a cluster that is up but doing nothing (dev clusters overnight, warm pools sized for peak, an EMR cluster that finished its job but did not terminate). Fix: aggressive idle-termination timeouts (5–10 min for interactive, terminate-on-completion for batch), scale-to-zero for serverless SQL warehouses.
-- **Over-provision:** a cluster doing work but on the wrong shape. The classic is requesting `r5.4xlarge` (128 GB) executors with `spark.executor.memory=8g` — you pay for 128 GB and use 8. Or running 100 executors on a job whose shuffle parallelism caps useful concurrency at 30. Fix: right-size executor memory/cores to the actual working set, and let AQE coalesce partitions instead of over-parallelizing. See [spark-internals/aqe](../../spark-internals/aqe/README.md).
+- **Over-provision:** a cluster doing work but on the wrong shape. The classic is requesting `r5.4xlarge` (128 GB) executors with `spark.executor.memory=8g` — you pay for 128 GB and use 8. Or running 100 executors on a job whose shuffle parallelism caps useful concurrency at 30. Fix: right-size executor memory/cores to the actual working set, and let AQE (Adaptive Query Execution — Spark's feature that automatically adjusts query plans at runtime) coalesce partitions instead of over-parallelizing.
 
 ### Graviton and instance-family arbitrage
 
-On AWS, Graviton (`r6g`, `m6g`, `r7g`) is typically ~20% cheaper per hour and often *faster* on JVM/Spark workloads, so the effective `$ per unit work` saving exceeds the sticker discount. The only friction is native-library compatibility (e.g., JNI bindings, certain Parquet codecs). For pure Spark/SQL it is close to free money and should be a default, not an experiment.
+On AWS, Graviton (`r6g`, `m6g`, `r7g`) refers to ARM-based processors made by AWS that are typically ~20% cheaper per hour and often *faster* on JVM/Spark workloads, so the effective `$ per unit work` saving exceeds the sticker discount. The only friction is native-library compatibility (e.g., JNI bindings, certain Parquet codecs). For pure Spark/SQL it is close to free money and should be a default, not an experiment.
 
 ### Storage tiering and snapshot hygiene
 
-Iceberg/Delta keep old snapshots for time travel; left unbounded they accumulate orphan files you pay to store and that bloat metadata listing. Expire snapshots (Iceberg `expire_snapshots`, Delta `VACUUM`) on a retention aligned to your actual time-travel SLA (often 7 days, not the default). Tier cold raw zones to S3 Infrequent Access / Glacier via lifecycle rules — but never tier hot query targets, where the per-GET retrieval cost and latency dwarf the storage saving.
+Iceberg/Delta keep old snapshots (point-in-time versions of your table) for time travel (the ability to query your table as it existed at a past point in time); left unbounded they accumulate orphan files (data files no longer referenced by any snapshot) you pay to store and that bloat metadata listing. Expire snapshots (Iceberg `expire_snapshots`, Delta `VACUUM`) on a retention aligned to your actual time-travel SLA (often 7 days, not the default). Tier cold raw zones to S3 Infrequent Access / Glacier via lifecycle rules — but never tier hot query targets, where the per-GET retrieval cost and latency dwarf the storage saving.
 
 ## Worked example
 
@@ -195,7 +195,7 @@ if __name__ == "__main__":
     df.write.mode("append").saveAsTable("marketing.attribution_scored")
 ```
 
-Tag every cluster/job at launch so the spend lands on a team (the input to [cost-attribution](../cost-attribution/README.md)):
+Tag every cluster/job at launch so the spend lands on a team:
 
 ```hcl
 # emr_cluster.tf
@@ -212,9 +212,9 @@ tags = {
 
 - **Cost budgets as code, enforced at submit.** The `cost_guard` above lives next to the pipeline, is reviewed in PRs, and fails the run when a pruning regression blows the budget. Pair with a hard `query_timeout` and a `max_bytes_billed` ceiling on serverless engines (BigQuery `maximumBytesBilled`, Athena workgroup `BytesScannedCutoffPerQuery`).
 - **A tiered cluster policy.** Driver + SLA-critical executors on on-demand/savings-plan; the elastic body on diversified Spot across 3+ instance types and AZs; an automatic on-demand fallback pool when Spot capacity is unavailable. Encode it once in a Databricks cluster policy or EMR instance fleet, not per-job.
-- **Scheduled compaction and snapshot expiry as first-class pipelines.** Treat `rewrite_data_files` / `OPTIMIZE` and `expire_snapshots` / `VACUUM` as monitored DAGs with their own SLAs, not as someone's cron job. The compaction compute is a line item you *want* to see — it is buying down future scan cost.
+- **Scheduled compaction and snapshot expiry as first-class pipelines.** Treat `rewrite_data_files` / `OPTIMIZE` and `expire_snapshots` / `VACUUM` as monitored DAGs (Directed Acyclic Graphs — the workflow graphs your orchestration tool runs) with their own SLAs, not as someone's cron job. The compaction compute is a line item you *want* to see — it is buying down future scan cost.
 - **Unit-cost dashboards over bill dashboards.** Track `$/TB scanned`, `$/million events ingested`, `$/active user` weekly. Alert on unit-cost regressions, not absolute spend, so growth does not page you and waste does.
-- **Default to Graviton + AQE on every new workload.** Make the cheap, fast configuration the golden path so teams opt *out*, not in. See [platform-engineering/golden-paths](../../platform-engineering/golden-paths/README.md).
+- **Default to Graviton + AQE on every new workload.** Make the cheap, fast configuration the golden path so teams opt *out*, not in.
 - **A monthly "top 10 spenders" review** joining usage data to query history, ranked by cost. The dominant term moves; this is how you re-find it. One job almost always accounts for an outsized share.
 
 ## Anti-patterns & failure modes
@@ -228,7 +228,7 @@ tags = {
 | Small-file explosion from streaming ingest | Job runtime grows with file count, not data volume; S3 LIST/GET cost spikes | Scheduled compaction to 128–512 MB; tune ingest batch interval |
 | Dev/staging clusters with no idle timeout | Flat overnight/weekend spend; <30% daytime utilization | Idle-termination 5–10 min; terminate batch clusters on completion |
 | Oversized executors (`r5.4xlarge`, `executor.memory=8g`) | Cluster memory utilization <20%; paying for unused RAM | Right-size to working set; fewer, correctly-sized nodes |
-| Optimizing the bill in aggregate with no attribution | Endless meetings, no team owns the number, nothing changes | Tag everything; route cost to domains via [cost-attribution](../cost-attribution/README.md) |
+| Optimizing the bill in aggregate with no attribution | Endless meetings, no team owns the number, nothing changes | Tag everything; route cost to domains via cost attribution |
 | Unbounded snapshot retention | Storage and metadata listing grow without bound; `VACUUM` never runs | Expire snapshots on the actual time-travel SLA; schedule orphan-file removal |
 
 ## Decision guidance
@@ -237,8 +237,8 @@ tags = {
 
 | If the dominant term is... | Reach for | Not |
 |---|---|---|
-| Bytes scanned / instance-hours driven by scan | Partition pruning, compaction, column projection, DPP | Spot — it only discounts the waste |
-| Instance price on already-efficient jobs | Graviton, Savings Plans/RI sized to the floor, Spot on safe stages | More tuning — diminishing returns |
+| Bytes scanned / instance-hours driven by scan | Partition pruning, compaction, column projection, DPP (Dynamic Partition Pruning — a Spark optimization that eliminates irrelevant partitions at runtime based on join results) | Spot — it only discounts the waste |
+| Instance price on already-efficient jobs | Graviton, Savings Plans/RI (Reserved Instances — a commitment to use a specific instance type for 1–3 years in exchange for a discount) sized to the floor, Spot on safe stages | More tuning — diminishing returns |
 | Idle / over-provisioned capacity | Idle timeouts, scale-to-zero, right-sizing, AQE coalesce | Bigger commitments |
 | Cross-AZ shuffle or cross-region egress | Co-locate compute with data, single-AZ placement groups for shuffle-heavy jobs | Ignoring it — egress is silent and large |
 
@@ -264,4 +264,3 @@ tags = {
 - [spark-internals/broadcast-join](../../spark-internals/broadcast-join/README.md) — avoiding the shuffle that drives runtime cost.
 - [lakehouse/iceberg](../../lakehouse/iceberg/README.md) — compaction, snapshot expiry, and metadata mechanics.
 - [observability/metrics](../../observability/metrics/README.md) — emitting unit-cost metrics, not just absolute spend.
-- External: [AWS — Amazon EMR best practices: cost optimization](https://aws.github.io/aws-emr-best-practices/docs/bestpractices/Cost%20Optimization/) and the [Apache Iceberg maintenance documentation](https://iceberg.apache.org/docs/latest/maintenance/).
